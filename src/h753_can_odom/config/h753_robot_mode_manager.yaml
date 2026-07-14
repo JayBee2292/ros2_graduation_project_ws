@@ -20,7 +20,7 @@ h753_robot_mode_manager:
     # Visualization-only /map_odom vector. Enable only while diagnosing pose.
     launch_map_odom: false
     lidar_device_path: /dev/ttyUSB0
-    can_device_path: /dev/serial/by-id/usb-Openlight_Labs_CANable2_b158aa7_github.com_normaldotcom_canable2.git_209F33833630-if00
+    can_device_path: /dev/serial/by-id/usb-ElmueSoft__netcult.ch_elmue__Slcan_2.5_-_Multiboard_209F338336305011-if00
     uart_device_path: /dev/serial/by-id/usb-STMicroelectronics_STLINK-V3_0036002C3235511837333439-if02
     collision_monitor_node: /collision_monitor
     joy_timeout_s: 0.50

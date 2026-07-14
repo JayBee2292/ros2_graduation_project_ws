@@ -26,7 +26,7 @@ CAN_COMMAND_ID = 0x1FF
 CAN_ENABLE_REFRESH_S = 1.0
 DEFAULT_CAN_PORT = (
     '/dev/serial/by-id/'
-    'usb-Openlight_Labs_CANable2_b158aa7_github.com_normaldotcom_canable2.git_209F33833630-if00'
+    'usb-ElmueSoft__netcult.ch_elmue__Slcan_2.5_-_Multiboard_209F338336305011-if00'
 )
 FD_DLC_TO_LENGTH = {
     **{str(i): i for i in range(9)},

@@ -27,7 +27,15 @@ FRAME_HEADER_0 = 0xA5
 FRAME_HEADER_1 = 0x5A
 PACKET_TWIST = 0x10
 STM_UART_HINTS = ('stmicroelectronics', 'stlink')
-EXCLUDED_UART_HINTS = ('canable', 'openlight', 'silicon_labs', 'cp210')
+EXCLUDED_UART_HINTS = (
+    'canable',
+    'openlight',
+    'elmuesoft',
+    'netcult',
+    'slcan',
+    'silicon_labs',
+    'cp210',
+)
 
 
 def clamp(value: float, minimum: float, maximum: float) -> float:

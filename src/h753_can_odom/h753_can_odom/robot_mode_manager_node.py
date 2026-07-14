@@ -68,7 +68,14 @@ MODE_TOPOLOGY = {
     MODE_INSPECTION_DRIVE: TOPOLOGY_INSPECTION,
 }
 
-CAN_DEVICE_HINTS = ('canable', 'openlight', 'normaldotcom')
+CAN_DEVICE_HINTS = (
+    'canable',
+    'openlight',
+    'normaldotcom',
+    'elmuesoft',
+    'netcult',
+    'slcan_2.5',
+)
 UART_DEVICE_HINTS = ('stmicroelectronics', 'stlink')
 
 
@@ -146,8 +153,8 @@ class RobotModeManagerNode(Node):
         self.declare_parameter(
             'can_device_path',
             '/dev/serial/by-id/'
-            'usb-Openlight_Labs_CANable2_b158aa7_github.com_normaldotcom_'
-            'canable2.git_209F33833630-if00',
+            'usb-ElmueSoft__netcult.ch_elmue__Slcan_2.5_-_Multiboard_'
+            '209F338336305011-if00',
         )
         self.declare_parameter(
             'uart_device_path',
