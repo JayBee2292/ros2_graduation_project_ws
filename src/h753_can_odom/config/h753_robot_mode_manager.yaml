@@ -1,0 +1,49 @@
+h753_robot_mode_manager:
+  ros__parameters:
+    joy_topic: /joy
+    nav_cmd_vel_topic: /cmd_vel
+    selected_cmd_vel_topic: /cmd_vel_selected
+    mode_request_topic: /robot_mode/request
+    mode_topic: /robot_mode
+    frontier_enabled_topic: /frontier_explorer/enabled
+    posegraph_file: /home/jyl1015/ros2_graduation_project_ws/maps/h753_map
+    runtime_log_directory: /home/jyl1015/.ros/log/h753_robot_modes
+    launch_lidar: true
+    launch_odom: true
+    launch_uart_bridge: true
+    launch_rviz: true
+    launch_camera: true
+    # D435i IMU enabled via librealsense2 RSUSB backend (built from source).
+    # RSUSB bypasses Jetson kernel HID modules and reads USB directly at 200 Hz gyro.
+    enable_imu: true
+    launch_imu_odom: true
+    # Visualization-only /map_odom vector. Enable only while diagnosing pose.
+    launch_map_odom: false
+    lidar_device_path: /dev/ttyUSB0
+    can_device_path: /dev/serial/by-id/usb-Openlight_Labs_CANable2_b158aa7_github.com_normaldotcom_canable2.git_209F33833630-if00
+    uart_device_path: /dev/serial/by-id/usb-STMicroelectronics_STLINK-V3_0036002C3235511837333439-if02
+    collision_monitor_node: /collision_monitor
+    joy_timeout_s: 0.50
+    joy_connection_warning_s: 3.0
+    nav_timeout_s: 0.50
+    keyboard_hold_s: 0.50
+    publish_period_s: 0.05
+    deadzone: 0.15
+    # Match the legacy UART teleop (xbox_drive_config.py / run_xbox_uart_drive.sh):
+    # MAX_LINEAR 0.60 m/s, MAX_ANGULAR 2.67 rad/s (= 0.60 m/s per track over the
+    # 0.45 m gauge for in-place rotation).
+    manual_max_linear_mps: 0.60
+    manual_max_angular_radps: 2.67
+    # Raised to the legacy envelope: low speeds did not overcome motor stiction.
+    inspection_max_linear_mps: 0.60
+    inspection_max_angular_radps: 2.67
+    track_gauge_m: 0.45
+    moving_inner_ratio: 0.40
+    left_stick_y_axis: 1
+    right_stick_x_axis: 3
+    dpad_y_axis: 7
+    dpad_up_value: 1.0
+    button_a: 0
+    button_b: 1
+    button_menu: 7
+    menu_hold_stop_s: 2.0

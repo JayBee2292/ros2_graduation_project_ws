@@ -1,0 +1,48 @@
+rtabmap:
+  ros__parameters:
+    subscribe_depth: false
+    subscribe_scan: true
+    subscribe_odom_info: false
+    approx_sync: true
+    queue_size: 10
+
+    frame_id: base_link
+    odom_frame_id: odom
+    map_frame_id: map
+
+    # Database
+    database_path: /home/jyl1015/ros2_graduation_project_ws/maps/rtabmap.db
+    Mem/IncrementalMemory: "true"
+    Mem/InitWMWithAllNodes: "false"
+
+    # Visual features for loop closure (distinguish similar corridors)
+    Kp/MaxFeatures: "200"
+    Kp/DetectorStrategy: "6"  # ORB
+    Kp/NNStrategy: "1"
+
+    # Loop closure
+    Rtabmap/DetectionRate: "2.0"
+    RGBD/NeighborLinkRefining: "true"
+    RGBD/ProximityBySpace: "true"
+    RGBD/ProximityMaxGraphDepth: "0"
+    RGBD/OptimizeFromGraphEnd: "false"
+    RGBD/AngularUpdate: "0.05"
+    RGBD/LinearUpdate: "0.05"
+
+    # LiDAR scan matching (complement visual features)
+    Reg/Strategy: "1"  # 0=visual, 1=ICP(scan), 2=visual+ICP
+    Reg/Force3DoF: "true"
+    Icp/VoxelSize: "0.05"
+    Icp/MaxCorrespondenceDistance: "0.15"
+    Icp/CorrespondenceRatio: "0.3"
+
+    # Memory management for 8GB Jetson
+    Rtabmap/TimeThr: "0"
+    Rtabmap/MemoryThr: "0"
+    Mem/STMSize: "30"
+
+    # Grid map from scan
+    Grid/FromDepth: "false"
+    Grid/Sensor: "0"  # 0=laser scan
+    Grid/RangeMax: "12.0"
+    Grid/CellSize: "0.05"

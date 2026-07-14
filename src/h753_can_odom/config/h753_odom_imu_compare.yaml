@@ -1,0 +1,8 @@
+h753_odom_imu_compare:
+  ros__parameters:
+    # Integrated SLAM/Nav2 publishes encoder-only odom here before IMU fusion.
+    wheel_odom_topic: wheel/odom
+    imu_topic: /camera/camera/imu
+    imu_timeout_s: 0.5
+    max_imu_dt_s: 0.1
+    report_period_s: 1.0

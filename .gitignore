@@ -1,0 +1,22 @@
+# ROS2 colcon build artifacts
+build/
+install/
+log/
+
+# h753_ros_humble is its own git repo (github.com/JayBee2292/H753zi_AMR)
+h753_ros_humble/
+
+# Editor / tool local state
+.vscode/
+.claude/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+
+# Vendored system utility (install dfu-util via apt instead)
+.tools/
+
+# Config backup snapshots
+*.bak_*

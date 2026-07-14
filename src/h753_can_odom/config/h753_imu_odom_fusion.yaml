@@ -1,0 +1,24 @@
+h753_imu_odom_fusion:
+  ros__parameters:
+    wheel_odom_topic: wheel/odom
+    imu_topic: /camera/camera/imu
+    odom_topic: odom
+    twist_topic: odom_vel
+
+    odom_frame_id: odom
+    base_frame_id: base_link
+    publish_tf: true
+
+    use_imu_yaw_rate: true
+
+    # D435i IMU is commonly reported in an optical-style camera frame.
+    # For a forward-facing level camera, base_link yaw usually maps to -Y.
+    # If the yaw vector goes the wrong way, flip imu_yaw_sign.
+    # If it barely changes while rotating, try imu_yaw_axis: z.
+    imu_yaw_axis: "y"
+    imu_yaw_sign: -1.0
+
+    gyro_bias_rad_s: 0.0
+    gyro_deadband_rad_s: 0.003
+    imu_timeout_s: 0.5
+    max_imu_dt_s: 0.1

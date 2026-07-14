@@ -1,0 +1,19 @@
+h753_frontier_explorer:
+  ros__parameters:
+    map_topic: /map
+    map_frame_id: map
+    base_frame_id: base_link
+    navigate_action: /navigate_to_pose
+    enabled_topic: /frontier_explorer/enabled
+    start_enabled: false
+    planning_period_s: 2.0
+    planner_timeout_s: 5.0
+    goal_timeout_s: 45.0
+    min_frontier_cells: 5
+    min_goal_distance_m: 0.60
+    max_goal_distance_m: 4.0
+    goal_clearance_m: 0.28
+    blacklist_radius_m: 0.60
+    blacklist_timeout_s: 180.0
+    frontier_size_weight: 0.03
+    free_threshold: 20

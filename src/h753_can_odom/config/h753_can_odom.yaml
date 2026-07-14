@@ -1,0 +1,18 @@
+h753_can_odom:
+  ros__parameters:
+    can_port: /dev/serial/by-id/usb-Openlight_Labs_CANable2_b158aa7_github.com_normaldotcom_canable2.git_209F33833630-if00
+    can_baud: 921600
+    can_nominal_command: S8
+    can_data_command: Y5
+    poll_period_s: 0.02
+    ppr: 548776
+    wheel_diameter_m: 0.21
+    track_width_m: 0.45
+    max_wheel_speed_mps: 3.5
+    delta_margin_ticks: 2048
+    max_dt_s: 0.5
+    odom_linear_sign: 1.0
+    odom_angular_sign: 1.0
+    odom_frame_id: odom
+    base_frame_id: base_link
+    publish_tf: true

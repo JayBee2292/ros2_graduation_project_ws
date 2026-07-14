@@ -1,0 +1,17 @@
+sensor_tf:
+  ros__parameters:
+    base_frame: base_link
+    laser_frame: laser_frame
+    laser_x: 0.075
+    laser_y: 0.0
+    laser_z: 0.30
+    laser_roll: 0.0
+    laser_pitch: 0.0
+    laser_yaw: 1.5585042276110685
+    camera_frame: camera_link
+    camera_x: 0.20
+    camera_y: 0.0
+    camera_z: 0.30
+    camera_roll: 0.0
+    camera_pitch: 0.0
+    camera_yaw: 0.0
