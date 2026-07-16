@@ -4,14 +4,14 @@ sensor_tf:
     laser_frame: laser_frame
     laser_x: 0.075
     laser_y: 0.0
-    laser_z: 0.30
+    laser_z: 0.3
     laser_roll: 0.0
     laser_pitch: 0.0
-    laser_yaw: 1.5585042276110685
+    laser_yaw: 1.6036192335059436
     camera_frame: camera_link
-    camera_x: 0.20
+    camera_x: 0.2
     camera_y: 0.0
-    camera_z: 0.30
+    camera_z: 0.3
     camera_roll: 0.0
     camera_pitch: 0.0
     camera_yaw: 0.0

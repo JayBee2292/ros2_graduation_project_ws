@@ -1,0 +1,30 @@
+h753_vlm_gateway:
+  ros__parameters:
+    # Robot-side camera input. The currently deployed server may keep subscribing
+    # to this topic because the robot workspace now owns the RealSense process.
+    camera_input_topic: /camera/camera/color/image_raw/compressed
+    # Optional gateway-owned alias for a later strict server interface. It does
+    # not require changing the current server and costs no network traffic when
+    # there is no subscriber.
+    server_image_topic: /vlm/request/image/compressed
+
+    # Compatibility with the currently deployed VLM server. Its publishers can
+    # later be remapped to /vlm/response/* without changing /safety/vlm_stop.
+    server_injury_stop_topic: /vlm/injury_stop
+    server_result_topic: /vlm/result
+    server_result_detail_topic: /vlm/result_detail
+
+    # Only this validated robot-internal topic may control the UART safety gate.
+    safety_stop_topic: /safety/vlm_stop
+    result_output_topic: /vlm/gateway/result
+    result_detail_output_topic: /vlm/gateway/result_detail
+    status_topic: /vlm/status
+    mode_topic: /robot_mode
+    enabled_modes: [3, 4, 5]
+
+    # The current server has no heartbeat, so discovery plus the age of any VLM
+    # response is reported. A stale zero does not stop the robot; a received one
+    # stays latched until the server explicitly sends zero.
+    response_timeout_s: 3.0
+    status_period_s: 1.0
+    max_result_chars: 20000

@@ -28,6 +28,93 @@ class FrontierGoal:
     score: float
 
 
+def has_map_clearance(
+    index: int,
+    data,
+    width: int,
+    height: int,
+    clearance_cells: int,
+    free_threshold: int,
+) -> bool:
+    """Return true when a robot-center cell is clear of obstacles and unknown."""
+    row, col = divmod(index, width)
+    if (
+        row - clearance_cells < 0
+        or row + clearance_cells >= height
+        or col - clearance_cells < 0
+        or col + clearance_cells >= width
+    ):
+        return False
+    for next_row in range(row - clearance_cells, row + clearance_cells + 1):
+        for next_col in range(col - clearance_cells, col + clearance_cells + 1):
+            if (next_row - row) ** 2 + (next_col - col) ** 2 > clearance_cells ** 2:
+                continue
+            value = data[next_row * width + next_col]
+            if value < 0 or value > free_threshold:
+                return False
+    return True
+
+
+def find_inset_goal_cell(
+    cluster: list[int],
+    data,
+    width: int,
+    height: int,
+    clearance_cells: int,
+    free_threshold: int,
+) -> int | None:
+    """Find a free goal inset from the unknown-space frontier boundary."""
+    if not cluster:
+        return None
+    center_row = sum(index // width for index in cluster) / len(cluster)
+    center_col = sum(index % width for index in cluster) / len(cluster)
+    frontier_candidates = sorted(
+        cluster,
+        key=lambda index: (
+            (index // width - center_row) ** 2 + (index % width - center_col) ** 2
+        ),
+    )
+    search_radius = max(1, clearance_cells + 2)
+    tested: set[int] = set()
+
+    # A few seeds around the cluster center are enough to avoid an obstacle
+    # splitting an otherwise useful frontier without scanning the whole map.
+    for frontier_index in frontier_candidates[:16]:
+        frontier_row, frontier_col = divmod(frontier_index, width)
+        nearby: list[tuple[int, int]] = []
+        for row in range(
+            max(0, frontier_row - search_radius),
+            min(height, frontier_row + search_radius + 1),
+        ):
+            for col in range(
+                max(0, frontier_col - search_radius),
+                min(width, frontier_col + search_radius + 1),
+            ):
+                distance_squared = (
+                    (row - frontier_row) ** 2 + (col - frontier_col) ** 2
+                )
+                if distance_squared <= search_radius ** 2:
+                    nearby.append((distance_squared, row * width + col))
+
+        for _distance_squared, candidate in sorted(nearby):
+            if candidate in tested:
+                continue
+            tested.add(candidate)
+            value = data[candidate]
+            if value < 0 or value > free_threshold:
+                continue
+            if has_map_clearance(
+                candidate,
+                data,
+                width,
+                height,
+                clearance_cells,
+                free_threshold,
+            ):
+                return candidate
+    return None
+
+
 class FrontierExplorerNode(Node):
     def __init__(self) -> None:
         super().__init__('h753_frontier_explorer')
@@ -39,6 +126,7 @@ class FrontierExplorerNode(Node):
         self.declare_parameter('planner_action', '/compute_path_to_pose')
         self.declare_parameter('enabled_topic', '/frontier_explorer/enabled')
         self.declare_parameter('start_enabled', False)
+        self.declare_parameter('startup_delay_s', 8.0)
         self.declare_parameter('planning_period_s', 2.0)
         self.declare_parameter('planner_timeout_s', 5.0)
         self.declare_parameter('goal_timeout_s', 45.0)
@@ -55,6 +143,10 @@ class FrontierExplorerNode(Node):
         self.base_frame_id = str(self.get_parameter('base_frame_id').value)
         self.map_topic = str(self.get_parameter('map_topic').value)
         self.enabled = bool(self.get_parameter('start_enabled').value)
+        self.startup_delay_s = max(
+            0.0,
+            float(self.get_parameter('startup_delay_s').value),
+        )
         self.planner_timeout_s = float(self.get_parameter('planner_timeout_s').value)
         self.goal_timeout_s = float(self.get_parameter('goal_timeout_s').value)
         self.min_frontier_cells = int(self.get_parameter('min_frontier_cells').value)
@@ -79,6 +171,7 @@ class FrontierExplorerNode(Node):
         self.planner_pending = False
         self.blacklist: list[tuple[float, float, float]] = []
         self.last_wait_log_at = 0.0
+        self.enabled_at = time.monotonic() if self.enabled else None
         self.map_subscription = None
 
         self.tf_buffer = Buffer()
@@ -124,6 +217,7 @@ class FrontierExplorerNode(Node):
         if self.enabled == msg.data:
             return
         self.enabled = msg.data
+        self.enabled_at = time.monotonic() if self.enabled else None
         self.get_logger().info(f'Frontier exploration enabled={self.enabled}')
         self._set_map_subscription(self.enabled)
         if not self.enabled:
@@ -146,6 +240,12 @@ class FrontierExplorerNode(Node):
 
     def _planning_timer_callback(self) -> None:
         if not self.enabled:
+            return
+        if (
+            self.enabled_at is not None
+            and time.monotonic() - self.enabled_at < self.startup_delay_s
+        ):
+            self._log_waiting('Waiting for Nav2 and live costmaps to stabilize')
             return
 
         if self.goal_handle is not None:
@@ -312,35 +412,14 @@ class FrontierExplorerNode(Node):
         height: int,
         clearance_cells: int,
     ) -> int | None:
-        center_row = sum(index // width for index in cluster) / len(cluster)
-        center_col = sum(index % width for index in cluster) / len(cluster)
-        candidates = sorted(
+        return find_inset_goal_cell(
             cluster,
-            key=lambda index: (
-                (index // width - center_row) ** 2 + (index % width - center_col) ** 2
-            ),
+            data,
+            width,
+            height,
+            clearance_cells,
+            self.free_threshold,
         )
-        for index in candidates:
-            if self._has_obstacle_clearance(index, data, width, height, clearance_cells):
-                return index
-        return None
-
-    @staticmethod
-    def _has_obstacle_clearance(
-        index: int,
-        data,
-        width: int,
-        height: int,
-        clearance_cells: int,
-    ) -> bool:
-        row, col = divmod(index, width)
-        for next_row in range(max(0, row - clearance_cells), min(height, row + clearance_cells + 1)):
-            for next_col in range(max(0, col - clearance_cells), min(width, col + clearance_cells + 1)):
-                if (next_row - row) ** 2 + (next_col - col) ** 2 > clearance_cells ** 2:
-                    continue
-                if data[next_row * width + next_col] > 50:
-                    return False
-        return True
 
     @staticmethod
     def _cell_to_world(map_msg: OccupancyGrid, index: int) -> tuple[float, float]:
@@ -384,12 +463,13 @@ class FrontierExplorerNode(Node):
             goal_handle = future.result()
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f'Failed to submit frontier planner check: {exc}')
-            self._blacklist_planner_candidate()
             self._reset_planner_check()
             return
         if not goal_handle.accepted:
-            self.get_logger().warn('Nav2 planner rejected frontier validation request')
-            self._blacklist_planner_candidate()
+            self.get_logger().warn(
+                'Nav2 planner rejected frontier validation request; '
+                'will retry without blacklisting the map location'
+            )
             self._reset_planner_check()
             return
         if not self.enabled or self.planner_candidate is None:

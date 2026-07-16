@@ -157,7 +157,7 @@ Visualization Manager:
       Name: LaserScan
       Position Transformer: XYZ
       Selectable: true
-      Size (Pixels): 3
+      Size (Pixels): 1
       Size (m): 0.009999999776482582
       Style: Points
       Topic:
@@ -219,19 +219,36 @@ Visualization Manager:
       Use Timestamp: false
       Value: true
     - Alpha: 1
-      Class: nav2_rviz_plugins/ParticleCloud
-      Color: 0; 180; 0
+      Class: rviz_default_plugins/PoseWithCovariance
+      Color: 0; 220; 0
+      Covariance:
+        Orientation:
+          Alpha: 0.5
+          Color: 255; 255; 127
+          Color Style: Unique
+          Frame: Local
+          Offset: 1
+          Scale: 1
+          Value: true
+        Position:
+          Alpha: 0.25
+          Color: 0; 180; 0
+          Scale: 1
+          Value: true
+        Value: true
       Enabled: true
-      Max Arrow Length: 0.3
-      Min Arrow Length: 0.02
-      Name: Amcl Particle Swarm
-      Shape: Arrow (Flat)
+      Head Length: 0.25
+      Head Radius: 0.08
+      Name: SlamToolbox Localization Pose
+      Shaft Length: 0.45
+      Shaft Radius: 0.04
+      Shape: Arrow
       Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
-        Reliability Policy: Best Effort
-        Value: /particle_cloud
+        Reliability Policy: Reliable
+        Value: /pose
       Value: true
     - Class: rviz_common/Group
       Displays:

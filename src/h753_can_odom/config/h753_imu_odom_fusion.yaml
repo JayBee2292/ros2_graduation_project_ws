@@ -1,24 +1,85 @@
 h753_imu_odom_fusion:
   ros__parameters:
+    # Encoder-only odometry input before IMU yaw fusion.
     wheel_odom_topic: wheel/odom
+    # D435i gyro/accel combined IMU input.
     imu_topic: /camera/camera/imu
+    # Final fused odometry and velocity outputs consumed by SLAM/Nav2.
     odom_topic: odom
     twist_topic: odom_vel
-
+    # TF parent/child frame names for odom -> base_link.
     odom_frame_id: odom
     base_frame_id: base_link
+    # true: this node owns and publishes the odom -> base_link TF.
     publish_tf: true
-
+    # true: use D435i angular velocity for heading; false: wheel fallback only.
     use_imu_yaw_rate: true
-
-    # D435i IMU is commonly reported in an optical-style camera frame.
-    # For a forward-facing level camera, base_link yaw usually maps to -Y.
-    # If the yaw vector goes the wrong way, flip imu_yaw_sign.
-    # If it barely changes while rotating, try imu_yaw_axis: z.
+    # D435i axis corresponding to robot yaw. Keep quotes because ROS YAML 1.1
+    # otherwise interprets a plain `y` as Boolean true.
     imu_yaw_axis: "y"
+    # Axis direction correction: calibrated robot CCW rotation must be positive.
     imu_yaw_sign: -1.0
-
+    # Manually supplied stationary raw-axis bias [rad/s]; startup auto bias
+    # replaces this value when auto_gyro_bias_samples is greater than zero.
     gyro_bias_rad_s: 0.0
-    gyro_deadband_rad_s: 0.003
+    # Runtime starts while the robot is still; ~1 s at 200 Hz removes the
+    # D435i's stationary one-LSB yaw drift before IMU fusion takes over.
+    auto_gyro_bias_samples: 200
+    # Corrected yaw rates below this magnitude are treated as stationary [rad/s].
+    gyro_deadband_rad_s: 0.01
+    # Maximum IMU message age before seamless relative-wheel fallback [s].
     imu_timeout_s: 0.5
+    # Ignore abnormal IMU timestamp gaps larger than this value [s].
     max_imu_dt_s: 0.1
+
+    # Stage 1 feature switch. false preserves the validated pre-filter yaw
+    # integration while the node still publishes raw/filtered A/B diagnostics.
+    enable_vibration_filter: false
+    # Stage 2 feature switch. Blend IMU and encoder yaw rates using the measured
+    # high-frequency vibration variance. Enable only after filter validation.
+    enable_adaptive_yaw_fusion: false
+    # Stage 3 feature switch. Slowly track bias only while fresh wheel odometry
+    # confirms that the robot has remained stationary and vibration is low.
+    enable_online_bias_update: false
+
+    # Expected D435i gyro rate [Hz], used to design the digital filter and size
+    # rolling windows. This does not change the RealSense stream rate itself.
+    imu_sample_rate_hz: 200.0
+    # Causal Hampel window length [samples]; must be odd and at least 3.
+    hampel_window_samples: 5
+    # Spike threshold as a multiple of robust sigma estimated from window MAD.
+    hampel_threshold_sigma: 3.0
+    # Minimum Hampel threshold [rad/s] so a genuine turn onset is not rejected.
+    hampel_min_threshold_rad_s: 0.10
+    # Candidate second-order Butterworth cutoff [Hz]. 10 Hz is not final; compare
+    # 5/10/15/20 Hz against recorded PSD and step response before enabling.
+    gyro_lpf_cutoff_hz: 10.0
+    # High-frequency residual variance rolling-window duration [s].
+    vibration_window_s: 0.50
+
+    # Candidate vibration variance thresholds [(rad/s)^2]. Below low, the IMU
+    # receives maximum trust; above high, it receives minimum trust.
+    vibration_variance_low: 0.0001
+    vibration_variance_high: 0.0025
+    # Adaptive fusion IMU weight bounds [0, 1]. Encoder weight is (1 - IMU).
+    imu_weight_min: 0.35
+    imu_weight_max: 0.90
+    # IMU/encoder yaw-rate disagreement used with high vibration [rad/s].
+    innovation_gate_rad_s: 0.35
+    # Maximum wheel odom age accepted by adaptive fusion/bias logic [s].
+    wheel_fresh_timeout_s: 0.20
+
+    # Exponential online raw-axis bias update gain [0, 1].
+    online_bias_alpha: 0.001
+    # Continuous verified stationary time before online bias updates [s].
+    bias_hold_time_s: 1.0
+    # Wheel odom stationary thresholds for online bias learning.
+    stationary_linear_threshold_mps: 0.01
+    stationary_angular_threshold_rad_s: 0.02
+
+    # Float64 A/B diagnostic topics. They publish even while the feature switches
+    # are false so rosbag data can determine final cutoff and variance settings.
+    raw_yaw_rate_topic: /imu_filter/yaw_rate_raw
+    filtered_yaw_rate_topic: /imu_filter/yaw_rate_filtered
+    vibration_variance_topic: /imu_filter/vibration_variance
+    imu_weight_topic: /imu_filter/imu_weight

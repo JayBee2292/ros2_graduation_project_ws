@@ -17,6 +17,31 @@ from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Imu, LaserScan
 
 
+class QuotedYamlString(str):
+    """String scalar that must retain quotes in ROS parameter YAML."""
+
+
+class CalibrationYamlDumper(yaml.SafeDumper):
+    pass
+
+
+def _represent_quoted_yaml_string(
+    dumper: CalibrationYamlDumper,
+    value: QuotedYamlString,
+):
+    return dumper.represent_scalar(
+        'tag:yaml.org,2002:str',
+        str(value),
+        style='"',
+    )
+
+
+CalibrationYamlDumper.add_representer(
+    QuotedYamlString,
+    _represent_quoted_yaml_string,
+)
+
+
 def normalize_angle(angle: float) -> float:
     return math.atan2(math.sin(angle), math.cos(angle))
 
@@ -68,6 +93,14 @@ class InteractiveCalibration(Node):
         self.min_straight_distance_m = float(self.get_parameter('min_straight_distance_m').value)
         self.min_rotation_rad = float(self.get_parameter('min_rotation_rad').value)
         self.max_imu_dt_s = float(self.get_parameter('max_imu_dt_s').value)
+        # The odom node reads track_width_m only when the calibration launch
+        # starts. Keep that runtime baseline fixed for this tool session too.
+        # Otherwise repeated menu-2 measurements compound each saved result
+        # even though the running odom node is still using the original value.
+        self.runtime_track_width_m = self.load_odom_float('track_width_m', 0.50)
+        self.runtime_odom_linear_sign = self.load_odom_sign('odom_linear_sign')
+        self.runtime_odom_angular_sign = self.load_odom_sign('odom_angular_sign')
+        self.track_width_measurements: list[float] = []
 
         self.lock = threading.Lock()
         self.latest_odom: Odometry | None = None
@@ -180,7 +213,7 @@ class InteractiveCalibration(Node):
             return
 
         measured_sign = 1.0 if forward_delta > 0.0 else -1.0
-        current_sign = self.load_odom_sign('odom_linear_sign')
+        current_sign = self.runtime_odom_linear_sign
         sign = current_sign * measured_sign
         print(f'현재 odom_linear_sign: {current_sign:.1f}')
         print(f'추천 odom_linear_sign: {sign:.1f}')
@@ -215,9 +248,9 @@ class InteractiveCalibration(Node):
             return
 
         measured_sign = 1.0 if delta_yaw > 0.0 else -1.0
-        current_sign = self.load_odom_sign('odom_angular_sign')
+        current_sign = self.runtime_odom_angular_sign
         sign = current_sign * measured_sign
-        current_track_width_m = self.load_odom_float('track_width_m', 0.45)
+        current_track_width_m = self.runtime_track_width_m
         track_width_m = calibrated_track_width(
             current_track_width_m,
             delta_yaw,
@@ -229,13 +262,28 @@ class InteractiveCalibration(Node):
         print(f'현재 track_width_m: {current_track_width_m:.4f} m')
         print(f'추천 track_width_m: {track_width_m:.4f} m')
         print('스키드 스티어 슬립을 포함한 ROS 오도메트리용 유효 차폭입니다.')
+        print('같은 실행에서 반복 측정해도 시작 시 적용된 차폭을 기준으로 각각 계산합니다.')
         if not 0.20 <= track_width_m <= 2.00:
             print('추천 차폭이 허용 범위 0.20~2.00 m 밖입니다. 테이프 각도와 회전 방향을 확인하고 다시 측정하세요.')
             return
+        self.track_width_measurements.append(track_width_m)
+        sorted_measurements = sorted(self.track_width_measurements)
+        middle = len(sorted_measurements) // 2
+        if len(sorted_measurements) % 2:
+            session_width_m = sorted_measurements[middle]
+        else:
+            session_width_m = (
+                sorted_measurements[middle - 1] + sorted_measurements[middle]
+            ) / 2.0
+        print(
+            f'이번 실행의 동일 속도 측정 {len(self.track_width_measurements)}회 '
+            f'중앙값: {session_width_m:.4f} m'
+        )
+        print('회전 속도를 바꿨다면 값을 섞지 말고 캘리브레이션을 재시작하세요.')
         if self.confirm_save():
             self.save_odom_params({
                 'odom_angular_sign': sign,
-                'track_width_m': track_width_m,
+                'track_width_m': session_width_m,
             })
             print('저장 완료. 실행 중인 odom 노드에는 바로 반영되지 않으니 캘리브레이션을 재시작하면 적용됩니다.')
 
@@ -299,8 +347,10 @@ class InteractiveCalibration(Node):
         print(f'추천 imu_yaw_axis: {axis}')
         print(f'추천 imu_yaw_sign: {sign:.1f}')
         if self.confirm_save():
-            self.save_imu_param('imu_yaw_axis', axis)
-            self.save_imu_param('imu_yaw_sign', sign)
+            self.save_imu_params({
+                'imu_yaw_axis': axis,
+                'imu_yaw_sign': sign,
+            })
             print('저장 완료. 통합 SLAM/Nav2 런타임을 재시작하면 적용됩니다.')
 
     def wait_for_odom(self, timeout_s: float = 5.0) -> Odometry | None:
@@ -380,14 +430,14 @@ class InteractiveCalibration(Node):
 
     @staticmethod
     def prompt_actual_rotation_degrees() -> float | None:
-        raw = input('테이프로 표시한 실제 반시계 회전각 [기본 90 deg]: ').strip()
+        raw = input('테이프로 표시한 실제 반시계 회전각 [기본 360 deg]: ').strip()
         try:
-            value = float(raw) if raw else 90.0
+            value = float(raw) if raw else 360.0
         except ValueError:
             print('회전각은 숫자로 입력하세요.')
             return None
-        if not 20.0 <= value <= 180.0:
-            print('회전각은 20~180 deg 범위로 입력하세요.')
+        if not 20.0 <= value <= 720.0:
+            print('회전각은 20~720 deg 범위로 입력하세요.')
             return None
         return value
 
@@ -439,9 +489,12 @@ class InteractiveCalibration(Node):
         self.write_yaml(self.sensor_tf_config_path, data)
 
     def save_imu_param(self, key: str, value) -> None:
+        self.save_imu_params({key: value})
+
+    def save_imu_params(self, values: dict) -> None:
         data = self.load_yaml(self.imu_config_path)
         params = data.setdefault('h753_imu_odom_fusion', {}).setdefault('ros__parameters', {})
-        params[key] = value
+        params.update(values)
         self.write_yaml(self.imu_config_path, data)
 
     @staticmethod
@@ -453,12 +506,33 @@ class InteractiveCalibration(Node):
 
     @staticmethod
     def write_yaml(path: Path, data: dict) -> None:
+        # ROS 2's YAML parser treats an unquoted YAML 1.1 `y` as Boolean true.
+        # PyYAML normally emits the calibrated yaw axis without quotes, so
+        # preserve it explicitly on every write (including later sign-only
+        # updates) to keep the parameter type STRING.
+        serializable = copy.deepcopy(data)
+        for node_data in serializable.values():
+            if not isinstance(node_data, dict):
+                continue
+            params = node_data.get('ros__parameters')
+            if not isinstance(params, dict):
+                continue
+            axis = params.get('imu_yaw_axis')
+            if isinstance(axis, str) and axis in {'x', 'y', 'z'}:
+                params['imu_yaw_axis'] = QuotedYamlString(axis)
+
         path.parent.mkdir(parents=True, exist_ok=True)
         if path.exists():
             backup = path.with_suffix(path.suffix + f'.bak_{stamp_suffix()}')
             shutil.copy2(path, backup)
         with path.open('w', encoding='utf-8') as file:
-            yaml.safe_dump(data, file, sort_keys=False, allow_unicode=False)
+            yaml.dump(
+                serializable,
+                file,
+                Dumper=CalibrationYamlDumper,
+                sort_keys=False,
+                allow_unicode=False,
+            )
 
 
 def main(args: list[str] | None = None) -> None:

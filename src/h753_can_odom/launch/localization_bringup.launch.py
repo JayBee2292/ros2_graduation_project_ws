@@ -26,6 +26,7 @@ def generate_launch_description():
 
     launch_lidar = LaunchConfiguration('launch_lidar')
     launch_camera = LaunchConfiguration('launch_camera')
+    realsense_params = LaunchConfiguration('realsense_params')
     enable_imu = LaunchConfiguration('enable_imu')
     launch_odom = LaunchConfiguration('launch_odom')
     launch_imu_odom = LaunchConfiguration('launch_imu_odom')
@@ -64,6 +65,11 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument('launch_lidar', default_value='true'),
         DeclareLaunchArgument('launch_camera', default_value='true'),
+        DeclareLaunchArgument(
+            'realsense_params',
+            default_value=str(h753_share / 'config' / 'h753_realsense.yaml'),
+            description='RealSense profile forwarded to sensors_bringup.',
+        ),
         DeclareLaunchArgument('enable_imu', default_value='false'),
         DeclareLaunchArgument('launch_odom', default_value='true'),
         DeclareLaunchArgument('launch_imu_odom', default_value='false'),
@@ -76,7 +82,7 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument('unite_imu_method', default_value='2'),
         DeclareLaunchArgument('gyro_fps', default_value='200'),
-        DeclareLaunchArgument('accel_fps', default_value='63'),
+        DeclareLaunchArgument('accel_fps', default_value='100'),
         DeclareLaunchArgument(
             'odom_params',
             default_value=str(h753_share / 'config' / 'h753_can_odom.yaml'),
@@ -113,6 +119,7 @@ def generate_launch_description():
             launch_arguments={
                 'launch_lidar': launch_lidar,
                 'launch_camera': launch_camera,
+                'realsense_params': realsense_params,
                 'enable_imu': enable_imu,
                 'publish_laser_tf': publish_laser_tf,
                 'lidar_params': lidar_params,

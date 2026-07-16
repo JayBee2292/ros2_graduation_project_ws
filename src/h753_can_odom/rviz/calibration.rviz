@@ -5,10 +5,8 @@ Panels:
     Property Tree Widget:
       Expanded:
         - /Global Options1
-        - /Map1
         - /LaserScan1
         - /Odometry1
-        - /CameraColor1
         - /TF1
       Splitter Ratio: 0.5
     Tree Height: 600
@@ -38,25 +36,6 @@ Visualization Manager:
       Plane Cell Count: 20
       Reference Frame: <Fixed Frame>
       Value: true
-    - Alpha: 0.7
-      Class: rviz_default_plugins/Map
-      Color Scheme: map
-      Draw Behind: false
-      Enabled: true
-      Name: Map
-      Topic:
-        Depth: 1
-        Durability Policy: Transient Local
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /map
-      Update Topic:
-        Depth: 5
-        Durability Policy: Volatile
-        History Policy: Keep Last
-        Reliability Policy: Reliable
-        Value: /map_updates
-      Value: false
     - Alpha: 1
       Autocompute Intensity Bounds: true
       Autocompute Value Bounds:
@@ -78,9 +57,9 @@ Visualization Manager:
       Name: LaserScan
       Position Transformer: XYZ
       Selectable: true
-      Size (Pixels): 3
-      Size (m): 0.04
-      Style: Flat Squares
+      Size (Pixels): 1
+      Size (m): 0.01
+      Style: Points
       Topic:
         Depth: 5
         Durability Policy: Volatile
@@ -141,11 +120,11 @@ Visualization Manager:
       Update Interval: 0
       Value: true
     - Class: rviz_default_plugins/Image
-      Enabled: false
+      Enabled: true
       Max Value: 1
       Median window: 5
       Min Value: 0
-      Name: CameraColor
+      Name: RealsenseCamera
       Normalize Range: true
       Topic:
         Depth: 5

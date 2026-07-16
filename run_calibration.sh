@@ -29,11 +29,27 @@ check_lidar_port() {
   fi
 }
 
+prepare_launch_args() {
+  CALIBRATION_LAUNCH_ARGS=("$@")
+  local has_rviz_override=false
+  for arg in "$@"; do
+    if [[ "$arg" == launch_rviz:=* ]]; then
+      has_rviz_override=true
+      break
+    fi
+  done
+  if [[ "$has_rviz_override" == false ]] && pgrep -x rviz2 >/dev/null 2>&1; then
+    echo "WARNING: an RViz process is already running; reusing it instead of starting a duplicate." >&2
+    CALIBRATION_LAUNCH_ARGS+=("launch_rviz:=false")
+  fi
+}
+
 if [[ "${1:-}" == "--launch-only" ]]; then
   shift
   check_robot_mode_manager
   check_lidar_port "$@"
-  exec ros2 launch h753_can_odom calibration_bringup.launch.py "$@"
+  prepare_launch_args "$@"
+  exec ros2 launch h753_can_odom calibration_bringup.launch.py "${CALIBRATION_LAUNCH_ARGS[@]}"
 fi
 
 if [[ "${1:-}" == "--tool-only" ]]; then
@@ -67,6 +83,7 @@ EOF
 
 check_robot_mode_manager
 check_lidar_port "$@"
+prepare_launch_args "$@"
 
 LOG_DIR="$HOME/.ros/log/h753_calibration"
 mkdir -p "$LOG_DIR"
@@ -74,7 +91,7 @@ LOG_FILE="$LOG_DIR/launch_$(date +%Y%m%d_%H%M%S).log"
 UART_LOG_FILE="$LOG_DIR/uart_drive_$(date +%Y%m%d_%H%M%S).log"
 UART_DRIVE_PID=""
 
-setsid ros2 launch h753_can_odom calibration_bringup.launch.py "$@" >"$LOG_FILE" 2>&1 &
+setsid ros2 launch h753_can_odom calibration_bringup.launch.py "${CALIBRATION_LAUNCH_ARGS[@]}" >"$LOG_FILE" 2>&1 &
 LAUNCH_PID=$!
 
 cleanup() {

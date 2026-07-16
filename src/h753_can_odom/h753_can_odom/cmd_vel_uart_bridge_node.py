@@ -13,8 +13,14 @@ import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import (
+    DurabilityPolicy,
+    QoSProfile,
+    ReliabilityPolicy,
+    qos_profile_sensor_data,
+)
 from sensor_msgs.msg import LaserScan
+from std_msgs.msg import Int32
 
 try:
     import serial
@@ -88,6 +94,19 @@ def encode_twist_frame(linear_mps: float, angular_radps: float) -> bytes:
     return bytes(payload)
 
 
+class InjuryStopLatch:
+    """Keep the latest VLM stop state until the server explicitly changes it."""
+
+    def __init__(self) -> None:
+        self.active = False
+
+    def update(self, value: int) -> bool:
+        requested = value != 0
+        changed = requested != self.active
+        self.active = requested
+        return changed
+
+
 def serial_alias_names(path: str) -> list[str]:
     resolved_path = os.path.realpath(path)
     return [
@@ -151,6 +170,7 @@ class CmdVelUartBridgeNode(Node):
         super().__init__('h753_cmd_vel_uart_bridge')
 
         self.declare_parameter('cmd_vel_topic', '/cmd_vel_safe')
+        self.declare_parameter('injury_stop_topic', '/safety/vlm_stop')
         self.declare_parameter('scan_topic', '/scan')
         self.declare_parameter('require_scan', True)
         self.declare_parameter('scan_timeout_s', 0.50)
@@ -168,12 +188,13 @@ class CmdVelUartBridgeNode(Node):
         self.declare_parameter('max_angular_radps', 0.80)
         self.declare_parameter('linear_command_sign', 1.0)
         self.declare_parameter('angular_command_sign', 1.0)
-        self.declare_parameter('track_gauge_m', 0.45)
+        self.declare_parameter('track_gauge_m', 0.50)
         self.declare_parameter('max_track_speed_mps', 0.60)
         self.declare_parameter('min_linear_mps', 0.0)
         self.declare_parameter('min_angular_radps', 0.0)
 
         self.cmd_vel_topic = str(self.get_parameter('cmd_vel_topic').value)
+        self.injury_stop_topic = str(self.get_parameter('injury_stop_topic').value)
         self.scan_topic = str(self.get_parameter('scan_topic').value)
         self.require_scan = bool(self.get_parameter('require_scan').value)
         self.scan_timeout_s = float(self.get_parameter('scan_timeout_s').value)
@@ -213,8 +234,18 @@ class CmdVelUartBridgeNode(Node):
         self.last_reconnect_attempt = 0.0
         self.deadman_active = True
         self.scan_stale_active = False
+        self.injury_stop = InjuryStopLatch()
 
         self.create_subscription(Twist, self.cmd_vel_topic, self._cmd_vel_callback, 10)
+        injury_stop_qos = QoSProfile(depth=10)
+        injury_stop_qos.reliability = ReliabilityPolicy.RELIABLE
+        injury_stop_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
+        self.create_subscription(
+            Int32,
+            self.injury_stop_topic,
+            self._injury_stop_callback,
+            injury_stop_qos,
+        )
         if self.require_scan:
             self.create_subscription(
                 LaserScan,
@@ -231,7 +262,7 @@ class CmdVelUartBridgeNode(Node):
             f'UART bridge ready: {self.cmd_vel_topic} -> STM CMD_TWIST, '
             f'limits=({self.max_linear_mps:.2f} m/s, {self.max_angular_radps:.2f} rad/s), '
             f'signs=({self.linear_command_sign:+.0f}, {self.angular_command_sign:+.0f}), '
-            f'scan_guard={self.require_scan}'
+            f'scan_guard={self.require_scan}, injury_stop={self.injury_stop_topic}'
         )
 
     def destroy_node(self) -> bool:
@@ -264,6 +295,29 @@ class CmdVelUartBridgeNode(Node):
 
     def _scan_callback(self, _msg: LaserScan) -> None:
         self.last_scan_time = time.monotonic()
+
+    def _injury_stop_callback(self, msg: Int32) -> None:
+        value = int(msg.data)
+        changed = self.injury_stop.update(value)
+
+        if value not in (0, 1):
+            self.get_logger().error(
+                f'Invalid injury stop value {value}; treating non-zero as stop'
+            )
+
+        if changed:
+            if self.injury_stop.active:
+                self.get_logger().warn(
+                    'VLM injury stop asserted; holding STM stop until explicit value 0'
+                )
+            else:
+                self.get_logger().info(
+                    'VLM injury stop cleared; UART drive commands enabled'
+                )
+
+        # Send the changed safety state immediately instead of waiting for the
+        # next 20 Hz timer tick. The normal timer keeps repeating the stop frame.
+        self._send_active_command()
 
     def _timer_callback(self) -> None:
         self._try_open()
@@ -328,7 +382,7 @@ class CmdVelUartBridgeNode(Node):
             return
         linear_mps = self.active_linear_mps
         angular_radps = self.active_angular_radps
-        if not self._scan_is_fresh():
+        if self.injury_stop.active or not self._scan_is_fresh():
             linear_mps = 0.0
             angular_radps = 0.0
         linear_mps, angular_radps = self._apply_stiction_floor(linear_mps, angular_radps)

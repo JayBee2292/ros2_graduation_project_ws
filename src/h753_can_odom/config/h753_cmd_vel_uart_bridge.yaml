@@ -1,12 +1,18 @@
 h753_cmd_vel_uart_bridge:
   ros__parameters:
     cmd_vel_topic: /cmd_vel_safe
+    # Robot-internal output of h753_vlm_gateway: std_msgs/msg/Int32,
+    # 0=drive enabled, 1=stop. The UART bridge never trusts the remote server
+    # topic directly. If the gateway is not launched, this guard is inactive.
+    injury_stop_topic: /safety/vlm_stop
     scan_topic: /scan
     require_scan: true
     scan_timeout_s: 0.50
     uart_port: ""
     uart_baud: 921600
     lock_file: /home/jyl1015/ros2_graduation_project_ws/h753_ros_humble/tools/logs/xbox_uart_control.lock
+    # Stop if collision_monitor output is stale. Keep this below the STM
+    # firmware's independent 0.8 s command timeout.
     deadman_timeout_s: 0.30
     transmit_period_s: 0.05
     # Match the legacy UART teleop speed envelope so ROS manual driving feels
@@ -17,7 +23,8 @@ h753_cmd_vel_uart_bridge:
     # integration diagnostics; standalone run_xbox_uart_drive.sh is unaffected.
     linear_command_sign: -1.0
     angular_command_sign: -1.0
-    track_gauge_m: 0.45
+    # Physical left/right track center distance.
+    track_gauge_m: 0.50
     max_track_speed_mps: 0.60
     # Stiction floor: non-zero commands below this are raised to the minimum
     # viable motor speed. Tune based on measured breakaway speed.

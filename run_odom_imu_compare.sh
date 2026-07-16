@@ -17,8 +17,8 @@ Run this while robot mode 1 is active, then drive straight and rotate in place.
 Reset accumulated values at any time from another terminal:
   ros2 service call /h753_odom_imu_compare/reset std_srvs/srv/Trigger '{}'
 
-Current Jetson kernel does not expose /camera/camera/imu yet. Until the
-RealSense HID driver issue is fixed, the terminal will show imu[missing].
+Mapping modes publish /camera/camera/imu through the RealSense RSUSB backend.
+Do not start a second RealSense launch; this comparison node only subscribes.
 EOF
 
 exec ros2 launch h753_can_odom odom_imu_compare.launch.py \

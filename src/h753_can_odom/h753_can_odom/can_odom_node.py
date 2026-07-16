@@ -224,7 +224,7 @@ class H753CanOdomNode(Node):
         self.declare_parameter('poll_period_s', 0.01)
         self.declare_parameter('ppr', 548776)
         self.declare_parameter('wheel_diameter_m', 0.21)
-        self.declare_parameter('track_width_m', 0.45)
+        self.declare_parameter('track_width_m', 0.50)
         self.declare_parameter('odom_frame_id', 'odom')
         self.declare_parameter('base_frame_id', 'base_link')
         self.declare_parameter('publish_tf', True)

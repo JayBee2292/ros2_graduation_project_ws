@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import math
 import os
 import select
 import signal
@@ -10,6 +9,7 @@ import sys
 import termios
 import time
 import tty
+from collections.abc import Collection
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TextIO
@@ -27,7 +27,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from sensor_msgs.msg import Joy
-from std_msgs.msg import Bool, UInt8
+from std_msgs.msg import Bool, Int32, UInt8
 
 
 MODE_STOP = 0
@@ -36,7 +36,8 @@ MODE_AUTO_MAPPING = 2
 MODE_MANUAL_LOCALIZATION = 3
 MODE_GOAL_NAVIGATION = 4
 MODE_INSPECTION_DRIVE = 5
-VALID_MODES = tuple(range(6))
+MODE_DISASTER_MAPPING = 6
+VALID_MODES = tuple(range(7))
 
 MODE_NAMES = {
     MODE_STOP: 'STOP',
@@ -45,6 +46,7 @@ MODE_NAMES = {
     MODE_MANUAL_LOCALIZATION: 'MANUAL_LOCALIZATION',
     MODE_GOAL_NAVIGATION: 'GOAL_NAVIGATION',
     MODE_INSPECTION_DRIVE: 'INSPECTION_DRIVE',
+    MODE_DISASTER_MAPPING: 'DISASTER_MAPPING',
 }
 
 MODE_DESCRIPTIONS = {
@@ -54,6 +56,7 @@ MODE_DESCRIPTIONS = {
     MODE_MANUAL_LOCALIZATION: '수동 위치 확인: 저장 맵에서 위치를 추정하며 수동 주행합니다.',
     MODE_GOAL_NAVIGATION: '목적지 자율주행: 저장 맵에서 RViz Nav2 Goal로 이동합니다.',
     MODE_INSPECTION_DRIVE: '점검 주행: SLAM 없이 수동 주행으로 방향을 점검합니다.',
+    MODE_DISASTER_MAPPING: '재난 재탐사: 저장 맵을 불러와 frontier 이동하며 변화를 기록합니다.',
 }
 
 TOPOLOGY_MAPPING = 'mapping'
@@ -66,6 +69,7 @@ MODE_TOPOLOGY = {
     MODE_MANUAL_LOCALIZATION: TOPOLOGY_LOCALIZATION,
     MODE_GOAL_NAVIGATION: TOPOLOGY_LOCALIZATION,
     MODE_INSPECTION_DRIVE: TOPOLOGY_INSPECTION,
+    MODE_DISASTER_MAPPING: TOPOLOGY_MAPPING,
 }
 
 CAN_DEVICE_HINTS = (
@@ -85,6 +89,9 @@ class RuntimeProcess:
     process: subprocess.Popen
     log_stream: TextIO
     log_path: Path
+    resumes_posegraph: bool = False
+    perception_enabled: bool = False
+    perception_tuning_mode: bool = False
 
 
 def clamp(value: float, minimum: float, maximum: float) -> float:
@@ -93,6 +100,24 @@ def clamp(value: float, minimum: float, maximum: float) -> float:
 
 def apply_deadzone(value: float, deadzone: float) -> float:
     return 0.0 if abs(value) < deadzone else value
+
+
+def person_detection_transition(
+    mode: int,
+    enabled_modes: Collection[int],
+    previous_detected: bool | None,
+    detected: bool,
+) -> tuple[bool | None, str | None]:
+    """Return the next YOLO state and a terminal event for enabled modes."""
+    if mode not in enabled_modes:
+        return None, None
+    if detected == previous_detected:
+        return detected, None
+    if detected:
+        return True, 'detected'
+    if previous_detected is True:
+        return False, 'cleared'
+    return False, None
 
 
 def joystick_to_drive_twist(
@@ -126,6 +151,112 @@ def bool_text(value: bool) -> str:
     return 'true' if value else 'false'
 
 
+def should_resume_saved_map(
+    mode: int,
+    posegraph_exists: bool,
+) -> bool:
+    # Pseudocode:
+    #   if entering disaster remapping mode:
+    #       load the saved posegraph when both posegraph files exist
+    #   otherwise:
+    #       start/keep the normal live mapping session
+    return (
+        mode == MODE_DISASTER_MAPPING
+        and posegraph_exists
+    )
+
+
+def mapping_runtime_flavor_changed(
+    requested_topology: str,
+    current_topology: str,
+    current_resumes_posegraph: bool,
+    requested_resumes_posegraph: bool,
+) -> bool:
+    # Pseudocode:
+    #   fresh modes 1/2 <-> saved-map mode 6:
+    #       restart SLAM so scan graphs never leak between the two workflows
+    #   any other transition:
+    #       let the normal topology check decide whether to restart
+    return (
+        requested_topology == TOPOLOGY_MAPPING
+        and current_topology == TOPOLOGY_MAPPING
+        and current_resumes_posegraph != requested_resumes_posegraph
+    )
+
+
+def perception_runtime_flavor_changed(
+    current_enabled: bool,
+    requested_enabled: bool,
+    current_tuning_mode: bool,
+    requested_tuning_mode: bool,
+) -> bool:
+    # Pseudocode:
+    #   localization modes 3 and 4 share one ROS topology, but only mode 4
+    #   owns YOLO; restart when that mode-specific process set must change
+    #   mode 5 also restarts if its HSV tuning-window policy changes
+    return (
+        current_enabled != requested_enabled
+        or (
+            requested_enabled
+            and current_tuning_mode != requested_tuning_mode
+        )
+    )
+
+
+def should_launch_perception(
+    mode: int,
+    launch_enabled: bool,
+    camera_enabled: bool,
+    enabled_modes: Collection[int],
+) -> bool:
+    """Return whether the selected mode owns the RGB-D YOLO process."""
+    return launch_enabled and camera_enabled and mode in enabled_modes
+
+
+def drive_limits_for_mode(
+    _mode: int,
+    unified_limits: tuple[float, float],
+) -> tuple[float, float]:
+    # Pseudocode:
+    #   every drive-capable mode -> the same physical drive envelope
+    # Mode-specific behavior only chooses the command source. Final physical
+    # bounding is repeated in the UART bridge as a defense-in-depth guard.
+    return unified_limits
+
+
+def select_autonomous_drive_twist(
+    collision_safety_applied: bool | None,
+    manual_override_held: bool,
+    joy_fresh: bool,
+    joy_twist: Twist,
+    nav_fresh: bool,
+    nav_twist: Twist,
+) -> Twist:
+    """Select an autonomous-mode command with a fail-safe hold-to-drive override."""
+    selected = Twist()
+    if manual_override_held:
+        # Do not resume autonomous motion if the controller disappears while
+        # LB is held. A fresh Joy message with LB released is required first.
+        # Handle the manual takeover before the autonomous-safety readiness
+        # latch: manual modes do not depend on that latch either, and this
+        # command still passes through collision_monitor and the UART bridge's
+        # scan/VLM/deadman guards.
+        if joy_fresh:
+            selected.linear.x = joy_twist.linear.x
+            selected.angular.z = joy_twist.angular.z
+        return selected
+
+    if collision_safety_applied is not True:
+        return selected
+
+    if nav_fresh:
+        # The UART bridge applies command signs that match manual joystick
+        # driving, so autonomous Nav2 output needs the inverse signs here.
+        selected.linear.x = -nav_twist.linear.x
+        selected.angular.z = -nav_twist.angular.z
+    return selected
+
+
 class RobotModeManagerNode(Node):
     def __init__(self) -> None:
         super().__init__('h753_robot_mode_manager')
@@ -146,6 +277,14 @@ class RobotModeManagerNode(Node):
         self.declare_parameter('launch_uart_bridge', True)
         self.declare_parameter('launch_rviz', True)
         self.declare_parameter('launch_camera', True)
+        self.declare_parameter('launch_vlm_gateway', True)
+        self.declare_parameter('launch_yolo_perception', True)
+        self.declare_parameter('yolo_enabled_modes', [4, 5])
+        self.declare_parameter('yolo_person_found_topic', '/yolo/person_found')
+        self.declare_parameter(
+            'yolo_python_executable',
+            '/home/jyl1015/yolo_project/venv_gpu/bin/python3',
+        )
         self.declare_parameter('enable_imu', False)
         self.declare_parameter('launch_imu_odom', False)
         self.declare_parameter('launch_map_odom', False)
@@ -162,17 +301,16 @@ class RobotModeManagerNode(Node):
             'usb-STMicroelectronics_STLINK-V3_0036002C3235511837333439-if02',
         )
         self.declare_parameter('collision_monitor_node', '/collision_monitor')
+        self.declare_parameter('collision_service_timeout_s', 2.0)
         self.declare_parameter('joy_timeout_s', 0.50)
         self.declare_parameter('joy_connection_warning_s', 3.0)
         self.declare_parameter('nav_timeout_s', 0.50)
         self.declare_parameter('keyboard_hold_s', 0.50)
         self.declare_parameter('publish_period_s', 0.05)
         self.declare_parameter('deadzone', 0.15)
-        self.declare_parameter('manual_max_linear_mps', 0.60)
-        self.declare_parameter('manual_max_angular_radps', 2.67)
-        self.declare_parameter('inspection_max_linear_mps', 0.60)
-        self.declare_parameter('inspection_max_angular_radps', 2.67)
-        self.declare_parameter('track_gauge_m', 0.45)
+        self.declare_parameter('drive_max_linear_mps', 0.60)
+        self.declare_parameter('drive_max_angular_radps', 2.67)
+        self.declare_parameter('track_gauge_m', 0.50)
         self.declare_parameter('moving_inner_ratio', 0.40)
         self.declare_parameter('left_stick_y_axis', 1)
         self.declare_parameter('right_stick_x_axis', 3)
@@ -180,6 +318,7 @@ class RobotModeManagerNode(Node):
         self.declare_parameter('dpad_up_value', 1.0)
         self.declare_parameter('button_a', 0)
         self.declare_parameter('button_b', 1)
+        self.declare_parameter('button_lb', 4)
         self.declare_parameter('button_menu', 7)
         self.declare_parameter('menu_hold_stop_s', 2.0)
 
@@ -193,6 +332,18 @@ class RobotModeManagerNode(Node):
         self.launch_uart_bridge = bool(self.get_parameter('launch_uart_bridge').value)
         self.launch_rviz = bool(self.get_parameter('launch_rviz').value)
         self.launch_camera = bool(self.get_parameter('launch_camera').value)
+        self.launch_vlm_gateway = bool(
+            self.get_parameter('launch_vlm_gateway').value
+        )
+        self.launch_yolo_perception = bool(
+            self.get_parameter('launch_yolo_perception').value
+        )
+        self.yolo_enabled_modes = {
+            int(mode) for mode in self.get_parameter('yolo_enabled_modes').value
+        }
+        self.yolo_python_executable = Path(
+            str(self.get_parameter('yolo_python_executable').value)
+        ).expanduser()
         self.enable_imu = bool(self.get_parameter('enable_imu').value)
         self.launch_imu_odom = bool(self.get_parameter('launch_imu_odom').value)
         self.launch_map_odom = bool(self.get_parameter('launch_map_odom').value)
@@ -202,6 +353,10 @@ class RobotModeManagerNode(Node):
         self.collision_monitor_node = str(
             self.get_parameter('collision_monitor_node').value
         ).rstrip('/')
+        self.collision_service_timeout_s = max(
+            0.1,
+            float(self.get_parameter('collision_service_timeout_s').value),
+        )
         self.joy_timeout_s = float(self.get_parameter('joy_timeout_s').value)
         self.joy_connection_warning_s = float(
             self.get_parameter('joy_connection_warning_s').value
@@ -209,17 +364,11 @@ class RobotModeManagerNode(Node):
         self.nav_timeout_s = float(self.get_parameter('nav_timeout_s').value)
         self.keyboard_hold_s = float(self.get_parameter('keyboard_hold_s').value)
         self.deadzone = float(self.get_parameter('deadzone').value)
-        self.manual_max_linear_mps = float(
-            self.get_parameter('manual_max_linear_mps').value
+        self.drive_max_linear_mps = float(
+            self.get_parameter('drive_max_linear_mps').value
         )
-        self.manual_max_angular_radps = float(
-            self.get_parameter('manual_max_angular_radps').value
-        )
-        self.inspection_max_linear_mps = float(
-            self.get_parameter('inspection_max_linear_mps').value
-        )
-        self.inspection_max_angular_radps = float(
-            self.get_parameter('inspection_max_angular_radps').value
+        self.drive_max_angular_radps = float(
+            self.get_parameter('drive_max_angular_radps').value
         )
         self.track_gauge_m = float(self.get_parameter('track_gauge_m').value)
         self.moving_inner_ratio = float(self.get_parameter('moving_inner_ratio').value)
@@ -229,6 +378,7 @@ class RobotModeManagerNode(Node):
         self.dpad_up_value = float(self.get_parameter('dpad_up_value').value)
         self.button_a = int(self.get_parameter('button_a').value)
         self.button_b = int(self.get_parameter('button_b').value)
+        self.button_lb = int(self.get_parameter('button_lb').value)
         self.button_menu = int(self.get_parameter('button_menu').value)
         self.menu_hold_stop_s = float(self.get_parameter('menu_hold_stop_s').value)
 
@@ -246,15 +396,19 @@ class RobotModeManagerNode(Node):
         self.last_nav_at: float | None = None
         self.last_keyboard_at: float | None = None
         self.previous_buttons: list[int] = []
+        self.joy_override_held = False
         self.previous_dpad_y = 0.0
         self.menu_pressed_at: float | None = None
         self.menu_hold_stop_fired = False
         self.stdin_attributes = None
         self.collision_safety_applied: bool | None = None
         self.collision_state_request_pending = False
+        self.collision_state_request_started_at: float | None = None
         self.collision_safety_request_pending = False
+        self.collision_safety_request_started_at: float | None = None
         self.collision_safety_request_id = 0
         self.last_collision_safety_warning_at: float | None = None
+        self.yolo_person_detected: bool | None = None
 
         latched_qos = QoSProfile(depth=1)
         latched_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
@@ -290,6 +444,12 @@ class RobotModeManagerNode(Node):
             UInt8,
             str(self.get_parameter('mode_request_topic').value),
             self._mode_request_callback,
+            10,
+        )
+        self.create_subscription(
+            Int32,
+            str(self.get_parameter('yolo_person_found_topic').value),
+            self._yolo_person_found_callback,
             10,
         )
         self.cancel_nav_client = self.create_client(
@@ -365,15 +525,36 @@ class RobotModeManagerNode(Node):
     def _mode_request_callback(self, msg: UInt8) -> None:
         self.request_mode(int(msg.data), source='ROS topic')
 
+    def _yolo_person_found_callback(self, msg: Int32) -> None:
+        self.yolo_person_detected, event = person_detection_transition(
+            self.mode,
+            self.yolo_enabled_modes,
+            self.yolo_person_detected,
+            bool(msg.data),
+        )
+        if event == 'detected':
+            self.get_logger().info(
+                f'[YOLO][MODE {self.mode} {MODE_NAMES[self.mode]}] '
+                '사람이 인식되었습니다.'
+            )
+        elif event == 'cleared':
+            self.get_logger().info(
+                f'[YOLO][MODE {self.mode} {MODE_NAMES[self.mode]}] '
+                '사람이 더 이상 인식되지 않습니다.'
+            )
+
     def request_mode(self, requested_mode: int, source: str) -> None:
         if requested_mode not in VALID_MODES:
             self.get_logger().warn(f'Ignored unsupported mode {requested_mode}')
             return
 
+        if requested_mode != self.mode:
+            self.yolo_person_detected = None
+
         self._publish_stop()
         self._publish_frontier_enabled(False)
         self._cancel_nav_goals()
-        if requested_mode != MODE_AUTO_MAPPING:
+        if requested_mode not in (MODE_AUTO_MAPPING, MODE_DISASTER_MAPPING):
             self._stop_frontier_explorer()
 
         if requested_mode == MODE_STOP:
@@ -385,7 +566,11 @@ class RobotModeManagerNode(Node):
             self.get_logger().warn(f'Mode 0 STOP selected from {source}')
             return
 
-        if requested_mode in (MODE_MANUAL_LOCALIZATION, MODE_GOAL_NAVIGATION):
+        if requested_mode in (
+            MODE_MANUAL_LOCALIZATION,
+            MODE_GOAL_NAVIGATION,
+            MODE_DISASTER_MAPPING,
+        ):
             if not self._posegraph_exists():
                 self.mode = MODE_STOP
                 self.menu_selection = MODE_STOP
@@ -397,15 +582,56 @@ class RobotModeManagerNode(Node):
                 return
 
         requested_topology = MODE_TOPOLOGY[requested_mode]
-        if self.runtime is None or self.runtime.topology != requested_topology:
+        posegraph_exists = self._posegraph_exists()
+        resume_saved_map = should_resume_saved_map(
+            requested_mode,
+            posegraph_exists,
+        )
+        perception_enabled = should_launch_perception(
+            requested_mode,
+            self.launch_yolo_perception,
+            self.launch_camera,
+            self.yolo_enabled_modes,
+        )
+        perception_tuning_mode = (
+            perception_enabled and requested_mode == MODE_INSPECTION_DRIVE
+        )
+
+        # Modes 1/2 always use a fresh mapping graph. Mode 6 always uses the
+        # saved graph, so crossing that boundary restarts the mapping runtime.
+        runtime_needs_restart = (
+            self.runtime is None
+            or self.runtime.topology != requested_topology
+            or mapping_runtime_flavor_changed(
+                requested_topology,
+                self.runtime.topology,
+                self.runtime.resumes_posegraph,
+                resume_saved_map,
+            )
+            or perception_runtime_flavor_changed(
+                self.runtime.perception_enabled,
+                perception_enabled,
+                self.runtime.perception_tuning_mode,
+                perception_tuning_mode,
+            )
+        )
+        if runtime_needs_restart:
             self._stop_runtime()
-            if not self._start_runtime(requested_topology):
+            if not self._start_runtime(
+                requested_topology,
+                resume_posegraph=resume_saved_map,
+                perception_enabled=perception_enabled,
+                perception_tuning_mode=perception_tuning_mode,
+            ):
                 self.mode = MODE_STOP
                 self.menu_selection = MODE_STOP
                 self._publish_mode()
                 return
 
-        if requested_mode == MODE_AUTO_MAPPING and not self._start_frontier_explorer():
+        if (
+            requested_mode in (MODE_AUTO_MAPPING, MODE_DISASTER_MAPPING)
+            and not self._start_frontier_explorer()
+        ):
             self.mode = MODE_STOP
             self.menu_selection = MODE_STOP
             self._publish_mode()
@@ -446,20 +672,19 @@ class RobotModeManagerNode(Node):
             if self._is_fresh(self.last_joy_at, self.joy_timeout_s):
                 return self.joy_twist
             return Twist()
-        if self.mode in (MODE_AUTO_MAPPING, MODE_GOAL_NAVIGATION):
-            if self.collision_safety_applied is not True:
-                return Twist()
-            if self._is_fresh(self.last_nav_at, self.nav_timeout_s):
-                # Nav2 /cmd_vel is negated here because the UART bridge applies
-                # linear_command_sign / angular_command_sign = -1.0 to correct
-                # the physical motor polarity. Manual joystick achieves the same
-                # sign by negating the stick Y axis in _joy_to_twist. Autonomous
-                # Nav2 output has no such built-in negation, so we apply it here.
-                inverted_twist = Twist()
-                inverted_twist.linear.x = -self.nav_twist.linear.x
-                inverted_twist.angular.z = -self.nav_twist.angular.z
-                return inverted_twist
-            return Twist()
+        if self.mode in (
+            MODE_AUTO_MAPPING,
+            MODE_GOAL_NAVIGATION,
+            MODE_DISASTER_MAPPING,
+        ):
+            return select_autonomous_drive_twist(
+                self.collision_safety_applied,
+                self.joy_override_held,
+                self._is_fresh(self.last_joy_at, self.joy_timeout_s),
+                self.joy_twist,
+                self._is_fresh(self.last_nav_at, self.nav_timeout_s),
+                self.nav_twist,
+            )
         return Twist()
 
     def _joy_to_twist(self, msg: Joy) -> Twist:
@@ -486,6 +711,23 @@ class RobotModeManagerNode(Node):
         return twist
 
     def _handle_joy_buttons(self, msg: Joy, now: float) -> None:
+        override_held = self._button(msg, self.button_lb)
+        override_was_held = self._previous_button(self.button_lb)
+        self.joy_override_held = override_held
+        if self.mode in (
+            MODE_AUTO_MAPPING,
+            MODE_GOAL_NAVIGATION,
+            MODE_DISASTER_MAPPING,
+        ):
+            if override_held and not override_was_held:
+                self.get_logger().warn(
+                    'Xbox LB manual override engaged; joystick has drive priority'
+                )
+            elif not override_held and override_was_held:
+                self.get_logger().info(
+                    'Xbox LB manual override released; Nav2 drive resumed'
+                )
+
         menu_pressed = self._button(msg, self.button_menu)
         menu_was_pressed = self._previous_button(self.button_menu)
         if menu_pressed and not menu_was_pressed:
@@ -530,7 +772,7 @@ class RobotModeManagerNode(Node):
             self._handle_keyboard_key(key)
 
     def _handle_keyboard_key(self, key: str) -> None:
-        if key in '012345':
+        if key in '0123456':
             self.request_mode(int(key), source='keyboard')
             return
         if key in ('m', 'M'):
@@ -582,7 +824,13 @@ class RobotModeManagerNode(Node):
         self.keyboard_twist.angular.z = angular_radps
         self.last_keyboard_at = time.monotonic()
 
-    def _start_runtime(self, topology: str) -> bool:
+    def _start_runtime(
+        self,
+        topology: str,
+        resume_posegraph: bool = False,
+        perception_enabled: bool = False,
+        perception_tuning_mode: bool = False,
+    ) -> bool:
         busy_devices = self._busy_exclusive_devices()
         if busy_devices:
             self.get_logger().error(
@@ -593,6 +841,22 @@ class RobotModeManagerNode(Node):
 
         h753_share = Path(get_package_share_directory('h753_can_odom'))
         collision_params = h753_share / 'config' / 'h753_collision_monitor_modes.yaml'
+        if perception_enabled:
+            if not (
+                self.yolo_python_executable.is_file()
+                and os.access(self.yolo_python_executable, os.X_OK)
+            ):
+                self.get_logger().error(
+                    'YOLO Python executable is missing or not executable: '
+                    f'{self.yolo_python_executable}'
+                )
+                return False
+            perception_share = Path(
+                get_package_share_directory('h753_perception')
+            )
+            yolo_params = perception_share / 'config' / 'h753_yolo_perception.yaml'
+        else:
+            yolo_params = Path()
         common_args = [
             f'launch_lidar:={bool_text(self.launch_lidar)}',
             f'launch_odom:={bool_text(self.launch_odom)}',
@@ -603,27 +867,60 @@ class RobotModeManagerNode(Node):
             f'launch_uart_bridge:={bool_text(self.launch_uart_bridge)}',
             f'collision_monitor_params:={collision_params}',
         ]
-        # Live SLAM mapping is latency-sensitive: slam_toolbox's TF message
-        # filter drops every scan if laser_frame->map TF isn't ready within
-        # transform_timeout, and the D435i camera stream adds enough Jetson
-        # CPU load to push that lookup past the deadline. Force it off for
-        # mapping regardless of the launch_camera param; other topologies
-        # keep the configured value.
-        camera_on = self.launch_camera and topology != TOPOLOGY_MAPPING
+        # Every drive-capable topology keeps the D435i RGB preview available.
+        # Mapping still uses the lightweight profile with depth/IR disabled;
+        # enable_imu independently controls gyro/accel streams.
+        camera_on = self.launch_camera
         common_args.append(f'launch_camera:={bool_text(camera_on)}')
+        vlm_gateway_on = (
+            self.launch_vlm_gateway
+            and camera_on
+            and topology != TOPOLOGY_MAPPING
+        )
+        common_args.append(
+            f'launch_vlm_gateway:={bool_text(vlm_gateway_on)}'
+        )
 
         if topology == TOPOLOGY_MAPPING:
             launch_file = 'slam_navigation_bringup.launch.py'
             launch_args = common_args + [
+                f'realsense_params:={h753_share / "config" / "h753_realsense_imu.yaml"}',
+                f'continue_mapping:={bool_text(resume_posegraph)}',
+                f'posegraph_file:={self.posegraph_file}',
                 'launch_frontier_explorer:=false',
                 'auto_explore:=false',
             ]
         elif topology == TOPOLOGY_LOCALIZATION:
             launch_file = 'navigation_bringup.launch.py'
-            launch_args = common_args + [f'posegraph_file:={self.posegraph_file}']
+            realsense_profile = (
+                h753_share / 'config' / 'h753_realsense_rgbd.yaml'
+                if perception_enabled
+                else h753_share / 'config' / 'h753_realsense.yaml'
+            )
+            launch_args = common_args + [
+                f'posegraph_file:={self.posegraph_file}',
+                f'realsense_params:={realsense_profile}',
+                f'launch_yolo_perception:={bool_text(perception_enabled)}',
+                f'yolo_python_executable:={self.yolo_python_executable}',
+                f'yolo_params:={yolo_params}',
+                f'yolo_show_window:={bool_text(perception_tuning_mode)}',
+                f'yolo_tuning_mode:={bool_text(perception_tuning_mode)}',
+            ]
         elif topology == TOPOLOGY_INSPECTION:
             launch_file = 'inspection_drive_bringup.launch.py'
-            launch_args = common_args
+            realsense_profile = (
+                h753_share / 'config' / 'h753_realsense_rgbd.yaml'
+                if perception_enabled
+                else h753_share / 'config' / 'h753_realsense.yaml'
+            )
+            launch_args = common_args + [
+                f'realsense_params:={realsense_profile}',
+                f'launch_yolo_perception:={bool_text(perception_enabled)}',
+                f'yolo_python_executable:={self.yolo_python_executable}',
+                f'yolo_params:={yolo_params}',
+                f'yolo_show_window:={bool_text(perception_tuning_mode)}',
+                f'yolo_tuning_mode:={bool_text(perception_tuning_mode)}',
+            ]
         else:
             self.get_logger().error(f'Unknown runtime topology: {topology}')
             return False
@@ -649,10 +946,23 @@ class RobotModeManagerNode(Node):
             log_stream.close()
             self.get_logger().error(f'Failed to start {topology} runtime: {exc}')
             return False
-        self.runtime = RuntimeProcess(topology, process, log_stream, log_path)
+        self.runtime = RuntimeProcess(
+            topology,
+            process,
+            log_stream,
+            log_path,
+            resumes_posegraph=resume_posegraph,
+            perception_enabled=perception_enabled,
+            perception_tuning_mode=perception_tuning_mode,
+        )
         self.get_logger().info(
             f'Started {topology} runtime pid={process.pid}; log={log_path}'
         )
+        if resume_posegraph:
+            self.get_logger().warn(
+                f'Continuing saved map {self.posegraph_file}; place the robot '
+                'at the original map start pose before driving'
+            )
         return True
 
     def _stop_runtime(self) -> None:
@@ -698,7 +1008,7 @@ class RobotModeManagerNode(Node):
                 runtime = self.frontier_runtime
                 self.frontier_runtime = None
                 runtime.log_stream.close()
-                if self.mode == MODE_AUTO_MAPPING:
+                if self.mode in (MODE_AUTO_MAPPING, MODE_DISASTER_MAPPING):
                     self.mode = MODE_STOP
                     self.menu_selection = MODE_STOP
                     self._publish_stop()
@@ -795,7 +1105,11 @@ class RobotModeManagerNode(Node):
 
     def _publish_frontier_enabled(self, enabled: bool | None = None) -> None:
         message = Bool()
-        message.data = self.mode == MODE_AUTO_MAPPING if enabled is None else enabled
+        message.data = (
+            self.mode in (MODE_AUTO_MAPPING, MODE_DISASTER_MAPPING)
+            if enabled is None
+            else enabled
+        )
         try:
             self.frontier_pub.publish(message)
         except Exception:  # ROS context may already be closed during shutdown.
@@ -813,19 +1127,47 @@ class RobotModeManagerNode(Node):
     def _sync_collision_safety(self) -> None:
         if self.runtime is None:
             return
-        enabled = self.mode in (MODE_AUTO_MAPPING, MODE_GOAL_NAVIGATION)
+        enabled = self.mode in (
+            MODE_AUTO_MAPPING,
+            MODE_GOAL_NAVIGATION,
+            MODE_DISASTER_MAPPING,
+        )
         if self.collision_safety_applied == enabled:
             return
+        now = time.monotonic()
         if self.collision_state_request_pending:
-            return
+            if (
+                self.collision_state_request_started_at is None
+                or now - self.collision_state_request_started_at
+                <= self.collision_service_timeout_s
+            ):
+                return
+            self.collision_safety_request_id += 1
+            self.collision_state_request_pending = False
+            self.collision_state_request_started_at = None
+            self.get_logger().warn(
+                'collision_monitor get_state request timed out; retrying'
+            )
         if self.collision_safety_request_pending:
-            return
+            if (
+                self.collision_safety_request_started_at is None
+                or now - self.collision_safety_request_started_at
+                <= self.collision_service_timeout_s
+            ):
+                return
+            self.collision_safety_request_id += 1
+            self.collision_safety_request_pending = False
+            self.collision_safety_request_started_at = None
+            self.get_logger().warn(
+                'collision_monitor parameter request timed out; retrying'
+            )
         if not self.collision_state_client.service_is_ready():
             if enabled:
                 self._warn_collision_safety_unavailable()
             return
 
         self.collision_state_request_pending = True
+        self.collision_state_request_started_at = time.monotonic()
         self.collision_safety_request_id += 1
         request_id = self.collision_safety_request_id
         future = self.collision_state_client.call_async(GetState.Request())
@@ -841,6 +1183,7 @@ class RobotModeManagerNode(Node):
         if request_id != self.collision_safety_request_id:
             return
         self.collision_state_request_pending = False
+        self.collision_state_request_started_at = None
         try:
             response = future.result()
         except Exception as exc:
@@ -865,6 +1208,7 @@ class RobotModeManagerNode(Node):
             self._bool_parameter('PolygonSlow.enabled', enabled),
         ]
         self.collision_safety_request_pending = True
+        self.collision_safety_request_started_at = time.monotonic()
         future = self.collision_parameter_client.call_async(request)
         future.add_done_callback(
             lambda completed: self._collision_safety_done_callback(
@@ -878,6 +1222,7 @@ class RobotModeManagerNode(Node):
         if request_id != self.collision_safety_request_id:
             return
         self.collision_safety_request_pending = False
+        self.collision_safety_request_started_at = None
         try:
             response = future.result()
         except Exception as exc:
@@ -911,7 +1256,9 @@ class RobotModeManagerNode(Node):
     def _reset_collision_safety_state(self) -> None:
         self.collision_safety_request_id += 1
         self.collision_state_request_pending = False
+        self.collision_state_request_started_at = None
         self.collision_safety_request_pending = False
+        self.collision_safety_request_started_at = None
         self.collision_safety_applied = None
         self.last_collision_safety_warning_at = None
 
@@ -988,9 +1335,13 @@ class RobotModeManagerNode(Node):
         )
 
     def _manual_limits(self) -> tuple[float, float]:
-        if self.mode == MODE_INSPECTION_DRIVE:
-            return self.inspection_max_linear_mps, self.inspection_max_angular_radps
-        return self.manual_max_linear_mps, self.manual_max_angular_radps
+        return drive_limits_for_mode(
+            self.mode,
+            (
+                self.drive_max_linear_mps,
+                self.drive_max_angular_radps,
+            ),
+        )
 
     @staticmethod
     def _is_fresh(timestamp: float | None, timeout_s: float) -> bool:
@@ -1043,8 +1394,12 @@ class RobotModeManagerNode(Node):
         print('\n[H753 robot mode manager]', flush=True)
         for mode in VALID_MODES:
             print(f'  {mode}. {MODE_DESCRIPTIONS[mode]}', flush=True)
-        print('Keyboard: 0-5 mode, m menu, w/s/a/d drive, x or Space stop, h help', flush=True)
-        print('Xbox: Menu menu, D-pad up/down select, A apply, B stop, hold Menu 2s stop', flush=True)
+        print('Keyboard: 0-6 mode, m menu, w/s/a/d drive, x or Space stop, h help', flush=True)
+        print(
+            'Xbox: hold LB for manual override in modes 2/4/6, Menu menu, '
+            'D-pad up/down select, A apply, B stop, hold Menu 2s stop',
+            flush=True,
+        )
         print('Start state: mode 0 STOP', flush=True)
 
 

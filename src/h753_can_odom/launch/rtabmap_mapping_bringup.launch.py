@@ -95,6 +95,9 @@ def generate_launch_description():
                 'launch_lidar': launch_lidar,
                 'launch_camera': launch_camera,
                 'enable_imu': 'true',
+                'realsense_params': str(
+                    h753_share / 'config' / 'h753_realsense_rgbd.yaml'
+                ),
                 'publish_laser_tf': 'true',
                 'lidar_params': str(ydlidar_share / 'params' / 'Tmini.yaml'),
                 'base_frame': base_frame,

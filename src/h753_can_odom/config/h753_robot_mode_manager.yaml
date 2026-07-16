@@ -1,49 +1,78 @@
 h753_robot_mode_manager:
   ros__parameters:
+    # ROS input/output topics owned by the mode manager.
     joy_topic: /joy
     nav_cmd_vel_topic: /cmd_vel
     selected_cmd_vel_topic: /cmd_vel_selected
     mode_request_topic: /robot_mode/request
     mode_topic: /robot_mode
     frontier_enabled_topic: /frontier_explorer/enabled
+    # Saved slam_toolbox posegraph base path. Modes 3/4 localize against it;
+    # mode 6 loads it as a baseline and continues mapping. Mode 2 ignores it.
     posegraph_file: /home/jyl1015/ros2_graduation_project_ws/maps/h753_map
     runtime_log_directory: /home/jyl1015/.ros/log/h753_robot_modes
+    # Child components launched for the selected robot mode.
     launch_lidar: true
     launch_odom: true
     launch_uart_bridge: true
     launch_rviz: true
     launch_camera: true
+    # Robot-side VLM communication runs only in topologies where the manager
+    # also enables the D435i (modes 3/4/5, not mapping modes 1/2/6).
+    launch_vlm_gateway: true
+    # Run the consolidated YOLO RGB-D pipeline only in saved-map autonomous
+    # navigation (mode 4) and inspection/test drive (mode 5).
+    launch_yolo_perception: true
+    yolo_enabled_modes: [4, 5]
+    # The manager mirrors YOLO detection transitions to the mode terminal.
+    yolo_person_found_topic: /yolo/person_found
+    # This virtualenv already contains Jetson-compatible torch/ultralytics and
+    # can still import ROS 2 packages through include-system-site-packages.
+    yolo_python_executable: /home/jyl1015/yolo_project/venv_gpu/bin/python3
     # D435i IMU enabled via librealsense2 RSUSB backend (built from source).
+    # Mapping and mode 3 use lightweight RGB+IMU. Modes 4/5 switch to aligned
+    # RGB-D while YOLO is enabled, then return to lightweight RGB otherwise.
     # RSUSB bypasses Jetson kernel HID modules and reads USB directly at 200 Hz gyro.
     enable_imu: true
     launch_imu_odom: true
     # Visualization-only /map_odom vector. Enable only while diagnosing pose.
     launch_map_odom: false
+    # Exclusive hardware device paths checked before a runtime is started.
     lidar_device_path: /dev/ttyUSB0
     can_device_path: /dev/serial/by-id/usb-ElmueSoft__netcult.ch_elmue__Slcan_2.5_-_Multiboard_209F338336305011-if00
     uart_device_path: /dev/serial/by-id/usb-STMicroelectronics_STLINK-V3_0036002C3235511837333439-if02
     collision_monitor_node: /collision_monitor
+    # Retry lifecycle/parameter requests instead of permanently blocking auto
+    # drive if a request is sent while collision_monitor is still starting.
+    collision_service_timeout_s: 2.0
+    # Input freshness/deadman timeouts [s]. Stale inputs produce a zero Twist.
     joy_timeout_s: 0.50
     joy_connection_warning_s: 3.0
     nav_timeout_s: 0.50
     keyboard_hold_s: 0.50
+    # Selected Twist publication period [s] (0.05 s = 20 Hz).
     publish_period_s: 0.05
+    # Normalized joystick stick deadzone [0.0, 1.0].
     deadzone: 0.15
-    # Match the legacy UART teleop (xbox_drive_config.py / run_xbox_uart_drive.sh):
-    # MAX_LINEAR 0.60 m/s, MAX_ANGULAR 2.67 rad/s (= 0.60 m/s per track over the
-    # 0.45 m gauge for in-place rotation).
-    manual_max_linear_mps: 0.60
-    manual_max_angular_radps: 2.67
-    # Raised to the legacy envelope: low speeds did not overcome motor stiction.
-    inspection_max_linear_mps: 0.60
-    inspection_max_angular_radps: 2.67
-    track_gauge_m: 0.45
+    # One physical speed envelope for every drive-capable mode (1 through 6).
+    # It matches legacy UART teleop and clears tracked-base motor stiction.
+    # The UART bridge repeats these bounds and limits each track to 0.60 m/s.
+    drive_max_linear_mps: 0.60
+    drive_max_angular_radps: 2.67
+    # Physical track-center gauge [m], used to shape joystick turns.
+    track_gauge_m: 0.50
+    # Inside-track / outside-track speed ratio during moving turns.
     moving_inner_ratio: 0.40
+    # Linux Joy message axis indices for the connected Xbox controller.
     left_stick_y_axis: 1
     right_stick_x_axis: 3
     dpad_y_axis: 7
     dpad_up_value: 1.0
     button_a: 0
     button_b: 1
+    # Hold LB to give the joystick drive priority in autonomous modes 2, 4, 6.
+    # If Joy messages time out while held, drive stays stopped until LB release.
+    button_lb: 4
     button_menu: 7
+    # Holding Menu longer than this duration requests STOP mode [s].
     menu_hold_stop_s: 2.0

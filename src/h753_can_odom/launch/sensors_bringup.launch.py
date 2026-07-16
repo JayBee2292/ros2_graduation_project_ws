@@ -23,9 +23,9 @@ def generate_launch_description():
     h753_share = Path(get_package_share_directory('h753_can_odom'))
     ydlidar_share = Path(get_package_share_directory('ydlidar_ros2_driver'))
     sensor_tf = load_params(h753_share / 'config' / 'h753_sensor_tf.yaml', 'sensor_tf')
-    realsense_params = load_params(h753_share / 'config' / 'h753_realsense.yaml', 'realsense_camera')
     launch_lidar = LaunchConfiguration('launch_lidar')
     launch_camera = LaunchConfiguration('launch_camera')
+    realsense_params = LaunchConfiguration('realsense_params')
     enable_imu = LaunchConfiguration('enable_imu')
     publish_laser_tf = LaunchConfiguration('publish_laser_tf')
     lidar_params = LaunchConfiguration('lidar_params')
@@ -66,6 +66,11 @@ def generate_launch_description():
             description='Enable RealSense gyro/accel streams and /camera/camera/imu.',
         ),
         DeclareLaunchArgument(
+            'realsense_params',
+            default_value=str(h753_share / 'config' / 'h753_realsense.yaml'),
+            description='RealSense parameter file (VLM or explicit RGB-D profile).',
+        ),
+        DeclareLaunchArgument(
             'publish_laser_tf',
             default_value='true',
             description='Publish static base_frame -> laser_frame transform.',
@@ -81,7 +86,7 @@ def generate_launch_description():
             description='RealSense IMU unite method: 0=none, 1=copy, 2=linear interpolation.',
         ),
         DeclareLaunchArgument('gyro_fps', default_value='200'),
-        DeclareLaunchArgument('accel_fps', default_value='63'),
+        DeclareLaunchArgument('accel_fps', default_value='100'),
         DeclareLaunchArgument('base_frame', default_value=str(sensor_tf.get('base_frame', 'base_link'))),
         DeclareLaunchArgument('laser_frame', default_value=str(sensor_tf.get('laser_frame', 'laser_frame'))),
         DeclareLaunchArgument('laser_x', default_value=str(sensor_tf.get('laser_x', 0.0))),

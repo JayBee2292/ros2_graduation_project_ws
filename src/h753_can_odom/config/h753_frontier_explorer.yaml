@@ -6,14 +6,22 @@ h753_frontier_explorer:
     navigate_action: /navigate_to_pose
     enabled_topic: /frontier_explorer/enabled
     start_enabled: false
-    planning_period_s: 2.0
+    # Nav2 action servers exist before every lifecycle node and costmap is active.
+    startup_delay_s: 8.0
+    # Three seconds is responsive enough for mapping and reduces Python/ROS load.
+    planning_period_s: 3.0
     planner_timeout_s: 5.0
     goal_timeout_s: 45.0
     min_frontier_cells: 5
     min_goal_distance_m: 0.60
     max_goal_distance_m: 4.0
-    goal_clearance_m: 0.28
-    blacklist_radius_m: 0.60
-    blacklist_timeout_s: 180.0
+    # Place the robot center inside known free space instead of directly on the
+    # free/unknown boundary. This exceeds the footprint's approximately
+    # 0.266 m circumscribed radius by about 8 cm.
+    goal_clearance_m: 0.35
+    # Mapping changes continuously, so failed candidates must become eligible
+    # again soon instead of eliminating a whole room for three minutes.
+    blacklist_radius_m: 0.35
+    blacklist_timeout_s: 30.0
     frontier_size_weight: 0.03
     free_threshold: 20

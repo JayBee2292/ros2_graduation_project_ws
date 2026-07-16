@@ -23,7 +23,7 @@ def generate_launch_description():
     h753_share = Path(get_package_share_directory('h753_can_odom'))
     ydlidar_share = Path(get_package_share_directory('ydlidar_ros2_driver'))
     sensor_tf = load_params(h753_share / 'config' / 'h753_sensor_tf.yaml', 'sensor_tf')
-    realsense_params = load_params(h753_share / 'config' / 'h753_realsense.yaml', 'realsense_camera')
+    realsense_params = LaunchConfiguration('realsense_params')
     launch_lidar = LaunchConfiguration('launch_lidar')
     launch_odom = LaunchConfiguration('launch_odom')
     launch_imu_odom = LaunchConfiguration('launch_imu_odom')
@@ -41,6 +41,8 @@ def generate_launch_description():
     imu_odom_params = LaunchConfiguration('imu_odom_params')
     rviz_config = LaunchConfiguration('rviz_config')
     slam_params = LaunchConfiguration('slam_params')
+    continue_mapping = LaunchConfiguration('continue_mapping')
+    posegraph_file = LaunchConfiguration('posegraph_file')
     base_frame = LaunchConfiguration('base_frame')
     laser_frame = LaunchConfiguration('laser_frame')
     laser_x = LaunchConfiguration('laser_x')
@@ -57,6 +59,12 @@ def generate_launch_description():
     ]))
     map_odom_condition = IfCondition(PythonExpression([
         "'", launch_slam, "' == 'true' and '", launch_map_odom, "' == 'true'",
+    ]))
+    fresh_slam_condition = IfCondition(PythonExpression([
+        "'", launch_slam, "' == 'true' and '", continue_mapping, "' != 'true'",
+    ]))
+    resumed_slam_condition = IfCondition(PythonExpression([
+        "'", launch_slam, "' == 'true' and '", continue_mapping, "' == 'true'",
     ]))
 
     return LaunchDescription([
@@ -96,6 +104,11 @@ def generate_launch_description():
             description='Start Intel RealSense camera. Keep false when sensors_bringup is already running.',
         ),
         DeclareLaunchArgument(
+            'realsense_params',
+            default_value=str(h753_share / 'config' / 'h753_realsense_imu.yaml'),
+            description='RealSense profile; mapping uses RGB preview and motion streams.',
+        ),
+        DeclareLaunchArgument(
             'enable_imu',
             default_value='false',
             description='Enable RealSense gyro/accel streams and /camera/camera/imu.',
@@ -116,7 +129,7 @@ def generate_launch_description():
             description='RealSense IMU unite method: 0=none, 1=copy, 2=linear interpolation.',
         ),
         DeclareLaunchArgument('gyro_fps', default_value='200'),
-        DeclareLaunchArgument('accel_fps', default_value='63'),
+        DeclareLaunchArgument('accel_fps', default_value='100'),
         DeclareLaunchArgument(
             'odom_params',
             default_value=str(h753_share / 'config' / 'h753_can_odom.yaml'),
@@ -126,6 +139,16 @@ def generate_launch_description():
             'slam_params',
             default_value=str(h753_share / 'config' / 'h753_slam_toolbox.yaml'),
             description='Path to slam_toolbox parameter file.',
+        ),
+        DeclareLaunchArgument(
+            'continue_mapping',
+            default_value='false',
+            description='Load a serialized posegraph and continue live mapping.',
+        ),
+        DeclareLaunchArgument(
+            'posegraph_file',
+            default_value='/home/jyl1015/ros2_graduation_project_ws/maps/h753_map',
+            description='Serialized slam_toolbox posegraph base path without extension.',
         ),
         DeclareLaunchArgument(
             'imu_odom_params',
@@ -221,7 +244,24 @@ def generate_launch_description():
             name='slam_toolbox',
             output='screen',
             parameters=[slam_params],
-            condition=IfCondition(launch_slam),
+            condition=fresh_slam_condition,
+        ),
+        Node(
+            package='slam_toolbox',
+            executable='async_slam_toolbox_node',
+            name='slam_toolbox',
+            output='screen',
+            # Pseudocode:
+            #   deserialize baseline posegraph at its first-node/dock pose
+            #   keep accepting scans so newly occupied space updates /map
+            parameters=[
+                slam_params,
+                {
+                    'map_file_name': posegraph_file,
+                    'map_start_at_dock': True,
+                },
+            ],
+            condition=resumed_slam_condition,
         ),
         Node(
             package='h753_can_odom',

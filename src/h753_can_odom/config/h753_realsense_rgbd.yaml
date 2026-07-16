@@ -1,0 +1,14 @@
+/camera/camera:
+  ros__parameters:
+    # Explicit aligned RGB-D profile for mode 4/5 YOLO and RTAB-Map. Other
+    # modes keep depth alignment off to bound Jetson CPU and USB load.
+    enable_color: true
+    enable_depth: true
+    enable_infra1: false
+    enable_infra2: false
+    rgb_camera.color_profile: 640x480x15
+    depth_module.depth_profile: 640x480x15
+    rgb_camera.power_line_frequency: 2
+    enable_sync: true
+    align_depth.enable: true
+    pointcloud.enable: false

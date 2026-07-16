@@ -24,6 +24,7 @@ def generate_launch_description():
 
     launch_lidar = LaunchConfiguration('launch_lidar')
     launch_camera = LaunchConfiguration('launch_camera')
+    realsense_params = LaunchConfiguration('realsense_params')
     enable_imu = LaunchConfiguration('enable_imu')
     launch_odom = LaunchConfiguration('launch_odom')
     launch_imu_odom = LaunchConfiguration('launch_imu_odom')
@@ -38,6 +39,8 @@ def generate_launch_description():
     odom_params = LaunchConfiguration('odom_params')
     imu_odom_params = LaunchConfiguration('imu_odom_params')
     slam_params = LaunchConfiguration('slam_params')
+    continue_mapping = LaunchConfiguration('continue_mapping')
+    posegraph_file = LaunchConfiguration('posegraph_file')
     rviz_config = LaunchConfiguration('rviz_config')
     base_frame = LaunchConfiguration('base_frame')
     laser_frame = LaunchConfiguration('laser_frame')
@@ -69,6 +72,11 @@ def generate_launch_description():
             'launch_camera',
             default_value='true',
             description='Start the Intel RealSense camera in sensors_bringup.',
+        ),
+        DeclareLaunchArgument(
+            'realsense_params',
+            default_value=str(h753_share / 'config' / 'h753_realsense_imu.yaml'),
+            description='RealSense parameter profile forwarded to sensors_bringup.',
         ),
         DeclareLaunchArgument(
             'enable_imu',
@@ -116,7 +124,7 @@ def generate_launch_description():
             description='RealSense IMU unite method: 0=none, 1=copy, 2=linear interpolation.',
         ),
         DeclareLaunchArgument('gyro_fps', default_value='200'),
-        DeclareLaunchArgument('accel_fps', default_value='63'),
+        DeclareLaunchArgument('accel_fps', default_value='100'),
         DeclareLaunchArgument(
             'odom_params',
             default_value=str(h753_share / 'config' / 'h753_can_odom.yaml'),
@@ -131,6 +139,16 @@ def generate_launch_description():
             'slam_params',
             default_value=str(h753_share / 'config' / 'h753_slam_toolbox.yaml'),
             description='Path to slam_toolbox parameter file.',
+        ),
+        DeclareLaunchArgument(
+            'continue_mapping',
+            default_value='false',
+            description='Load a serialized posegraph and continue live mapping.',
+        ),
+        DeclareLaunchArgument(
+            'posegraph_file',
+            default_value='/home/jyl1015/ros2_graduation_project_ws/maps/h753_map',
+            description='Serialized slam_toolbox posegraph base path without extension.',
         ),
         DeclareLaunchArgument(
             'rviz_config',
@@ -152,6 +170,7 @@ def generate_launch_description():
             launch_arguments={
                 'launch_lidar': launch_lidar,
                 'launch_camera': launch_camera,
+                'realsense_params': realsense_params,
                 'enable_imu': enable_imu,
                 'publish_laser_tf': publish_laser_tf,
                 'lidar_params': lidar_params,
@@ -169,6 +188,7 @@ def generate_launch_description():
                 'launch_lidar': 'false',
                 'launch_camera': 'false',
                 'enable_imu': enable_imu,
+                'realsense_params': realsense_params,
                 'publish_laser_tf': 'false',
                 'launch_odom': launch_odom,
                 'launch_imu_odom': launch_imu_odom,
@@ -182,6 +202,8 @@ def generate_launch_description():
                 'odom_params': odom_params,
                 'imu_odom_params': imu_odom_params,
                 'slam_params': slam_params,
+                'continue_mapping': continue_mapping,
+                'posegraph_file': posegraph_file,
                 'rviz_config': rviz_config,
                 **sensor_pose_args,
             }.items(),

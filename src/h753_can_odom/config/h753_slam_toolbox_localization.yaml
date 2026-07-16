@@ -22,7 +22,8 @@ slam_toolbox:
     throttle_scans: 1
     transform_publish_period: 0.02
     map_update_interval: 2.0
-    resolution: 0.05
+    # Match maps newly created by h753_slam_toolbox.yaml [m/cell].
+    resolution: 0.025
     min_laser_range: 0.05
     max_laser_range: 12.0
     minimum_time_interval: 0.10

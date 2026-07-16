@@ -1,0 +1,14 @@
+/camera/camera:
+  ros__parameters:
+    # Lightweight mapping/calibration profile: RGB preview plus motion streams.
+    # Depth/infrared/pointcloud stay disabled to bound USB and Jetson load.
+    enable_color: true
+    enable_depth: false
+    enable_infra1: false
+    enable_infra2: false
+    # Keep one common RViz preview profile across every drive-capable mode.
+    rgb_camera.color_profile: 640x480x15
+    rgb_camera.power_line_frequency: 2
+    enable_sync: false
+    align_depth.enable: false
+    pointcloud.enable: false

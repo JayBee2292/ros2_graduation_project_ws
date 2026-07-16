@@ -1,0 +1,34 @@
+h753_yolo_perception:
+  ros__parameters:
+    # Existing yolo_project weights. The 22 MB person model finds targets;
+    # the 6 MB model preserves the team's separate blue-clothing detector.
+    person_model_path: /home/jyl1015/yolo_project/yolov8s.pt
+    blue_model_path: /home/jyl1015/yolo_project/yolov8s.pt
+    person_confidence: 0.40
+    blue_person_confidence: 0.50
+    # Limit GPU/CPU load and always process the latest frame, never a backlog.
+    inference_rate_hz: 5.0
+
+    # RealSense aligned RGB-D topics from h753_can_odom/sensors_bringup.
+    color_topic: /camera/camera/color/image_raw
+    depth_topic: /camera/camera/aligned_depth_to_color/image_raw
+    max_depth_age_s: 0.25
+    # Center 20% median ROI, with the D435i's millimetre-to-metre scale.
+    depth_roi_fraction: 0.20
+    depth_scale_m: 0.001
+
+    # person_blue.py HSV/torso settings, unchanged.
+    blue_h_min: 100
+    blue_h_max: 130
+    blue_s_min: 80
+    blue_v_min: 50
+    blue_ratio_threshold: 0.15
+    torso_top_ratio: 0.15
+    torso_bottom_ratio: 0.60
+
+    # Mode 4 overrides neither value. Mode 5 overrides both to true so its
+    # local test workflow retains the legacy OpenCV preview and HSV sliders.
+    show_window: false
+    tuning_mode: false
+    publish_raw_result_image: false
+    jpeg_quality: 85

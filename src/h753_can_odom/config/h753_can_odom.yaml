@@ -7,7 +7,7 @@ h753_can_odom:
     poll_period_s: 0.02
     ppr: 548776
     wheel_diameter_m: 0.21
-    track_width_m: 0.45
+    track_width_m: 0.6726533321428052
     max_wheel_speed_mps: 3.5
     delta_margin_ticks: 2048
     max_dt_s: 0.5

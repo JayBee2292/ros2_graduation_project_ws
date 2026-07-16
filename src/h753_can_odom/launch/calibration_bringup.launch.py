@@ -33,6 +33,7 @@ def generate_launch_description():
     launch_rviz = LaunchConfiguration('launch_rviz')
     publish_laser_tf = LaunchConfiguration('publish_laser_tf')
     lidar_params = LaunchConfiguration('lidar_params')
+    realsense_params = LaunchConfiguration('realsense_params')
     unite_imu_method = LaunchConfiguration('unite_imu_method')
     gyro_fps = LaunchConfiguration('gyro_fps')
     accel_fps = LaunchConfiguration('accel_fps')
@@ -97,12 +98,17 @@ def generate_launch_description():
             description='Path to YDLIDAR parameter file.',
         ),
         DeclareLaunchArgument(
+            'realsense_params',
+            default_value=str(h753_share / 'config' / 'h753_realsense_imu.yaml'),
+            description='Lightweight RGB plus IMU RealSense profile for calibration.',
+        ),
+        DeclareLaunchArgument(
             'unite_imu_method',
             default_value='2',
             description='Forwarded only when launch_camera and enable_imu are true.',
         ),
         DeclareLaunchArgument('gyro_fps', default_value='200'),
-        DeclareLaunchArgument('accel_fps', default_value='63'),
+        DeclareLaunchArgument('accel_fps', default_value='100'),
         DeclareLaunchArgument(
             'odom_params',
             default_value=str(h753_share / 'config' / 'h753_can_odom.yaml'),
@@ -141,6 +147,7 @@ def generate_launch_description():
                 'enable_imu': enable_imu,
                 'publish_laser_tf': publish_laser_tf,
                 'lidar_params': lidar_params,
+                'realsense_params': realsense_params,
                 'unite_imu_method': unite_imu_method,
                 'gyro_fps': gyro_fps,
                 'accel_fps': accel_fps,

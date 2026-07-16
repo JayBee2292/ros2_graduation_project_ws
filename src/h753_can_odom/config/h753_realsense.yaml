@@ -1,16 +1,14 @@
-realsense_camera:
+/camera/camera:
   ros__parameters:
-    # SLAM/Nav2 uses lidar and wheel odom. Keep reusable RGB-D topics available
-    # without saturating the Jetson with the RealSense default 30 Hz profiles.
+    # VLM/navigation profile. SLAM/Nav2 uses lidar and wheel odom, so only the
+    # RGB stream and the separately enabled D435i IMU are needed here.
     enable_color: true
-    enable_depth: true
+    enable_depth: false
     enable_infra1: false
     enable_infra2: false
-    # Preserve 720p RGB for downstream vision. D435i exposes 6/15/30 Hz at
-    # 1280x720, not 25 Hz. Use 15 Hz to avoid the unstable 30 Hz Jetson load.
-    rgb_camera.color_profile: 640x480x6
-    depth_module.depth_profile: 640x480x6
+    rgb_camera.color_profile: 640x480x15
+    depth_module.depth_profile: 640x480x15
     rgb_camera.power_line_frequency: 2
-    enable_sync: true
-    align_depth.enable: true
+    enable_sync: false
+    align_depth.enable: false
     pointcloud.enable: false

@@ -5,8 +5,8 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
-from launch_ros.actions import Node
+from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch_ros.actions import Node, SetParameter
 from launch_ros.parameter_descriptions import ParameterValue
 
 
@@ -16,6 +16,8 @@ def generate_launch_description():
 
     launch_lidar = LaunchConfiguration('launch_lidar')
     launch_camera = LaunchConfiguration('launch_camera')
+    realsense_params = LaunchConfiguration('realsense_params')
+    launch_vlm_gateway = LaunchConfiguration('launch_vlm_gateway')
     enable_imu = LaunchConfiguration('enable_imu')
     launch_odom = LaunchConfiguration('launch_odom')
     launch_imu_odom = LaunchConfiguration('launch_imu_odom')
@@ -25,16 +27,26 @@ def generate_launch_description():
     auto_explore = LaunchConfiguration('auto_explore')
     launch_rviz = LaunchConfiguration('launch_rviz')
     slam_params = LaunchConfiguration('slam_params')
+    continue_mapping = LaunchConfiguration('continue_mapping')
+    posegraph_file = LaunchConfiguration('posegraph_file')
     nav2_params = LaunchConfiguration('nav2_params')
     collision_monitor_params = LaunchConfiguration('collision_monitor_params')
     uart_bridge_params = LaunchConfiguration('uart_bridge_params')
+    vlm_gateway_params = LaunchConfiguration('vlm_gateway_params')
     frontier_explorer_params = LaunchConfiguration('frontier_explorer_params')
     uart_port = LaunchConfiguration('uart_port')
     rviz_config = LaunchConfiguration('rviz_config')
+    nav2_bond_timeout = LaunchConfiguration('nav2_bond_timeout')
 
     return LaunchDescription([
         DeclareLaunchArgument('launch_lidar', default_value='true'),
         DeclareLaunchArgument('launch_camera', default_value='true'),
+        DeclareLaunchArgument(
+            'realsense_params',
+            default_value=str(h753_share / 'config' / 'h753_realsense_imu.yaml'),
+            description='RealSense profile; mapping uses lightweight RGB plus IMU.',
+        ),
+        DeclareLaunchArgument('launch_vlm_gateway', default_value='false'),
         DeclareLaunchArgument('enable_imu', default_value='false'),
         DeclareLaunchArgument('launch_odom', default_value='true'),
         DeclareLaunchArgument('launch_imu_odom', default_value='false'),
@@ -56,8 +68,23 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument('launch_rviz', default_value='true'),
         DeclareLaunchArgument(
+            'nav2_bond_timeout',
+            default_value='15.0',
+            description='Lifecycle heartbeat timeout for a loaded Jetson.',
+        ),
+        DeclareLaunchArgument(
             'slam_params',
             default_value=str(h753_share / 'config' / 'h753_slam_toolbox.yaml'),
+        ),
+        DeclareLaunchArgument(
+            'continue_mapping',
+            default_value='false',
+            description='Load a serialized posegraph and continue live mapping.',
+        ),
+        DeclareLaunchArgument(
+            'posegraph_file',
+            default_value='/home/jyl1015/ros2_graduation_project_ws/maps/h753_map',
+            description='Serialized slam_toolbox posegraph base path without extension.',
         ),
         DeclareLaunchArgument(
             'nav2_params',
@@ -70,6 +97,10 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'uart_bridge_params',
             default_value=str(h753_share / 'config' / 'h753_cmd_vel_uart_bridge.yaml'),
+        ),
+        DeclareLaunchArgument(
+            'vlm_gateway_params',
+            default_value=str(h753_share / 'config' / 'h753_vlm_gateway.yaml'),
         ),
         DeclareLaunchArgument(
             'frontier_explorer_params',
@@ -94,6 +125,7 @@ def generate_launch_description():
                     launch_arguments={
                         'launch_lidar': launch_lidar,
                         'launch_camera': launch_camera,
+                        'realsense_params': realsense_params,
                         'enable_imu': enable_imu,
                         'launch_odom': launch_odom,
                         'launch_imu_odom': launch_imu_odom,
@@ -101,6 +133,8 @@ def generate_launch_description():
                         'launch_map_odom': launch_map_odom,
                         'launch_rviz': 'false',
                         'slam_params': slam_params,
+                        'continue_mapping': continue_mapping,
+                        'posegraph_file': posegraph_file,
                     }.items(),
                 ),
             ],
@@ -108,6 +142,10 @@ def generate_launch_description():
         GroupAction(
             scoped=True,
             actions=[
+                SetParameter(
+                    name='bond_timeout',
+                    value=ParameterValue(nav2_bond_timeout, value_type=float),
+                ),
                 IncludeLaunchDescription(
                     PythonLaunchDescriptionSource(
                         str(nav2_share / 'launch' / 'navigation_launch.py')
@@ -139,6 +177,17 @@ def generate_launch_description():
                 'autostart': True,
                 'node_names': ['collision_monitor'],
             }],
+        ),
+        Node(
+            package='h753_can_odom',
+            executable='vlm_gateway_node',
+            name='h753_vlm_gateway',
+            output='screen',
+            parameters=[vlm_gateway_params],
+            condition=IfCondition(PythonExpression([
+                "'", launch_vlm_gateway, "' == 'true' and '",
+                launch_camera, "' == 'true'",
+            ])),
         ),
         Node(
             package='h753_can_odom',
