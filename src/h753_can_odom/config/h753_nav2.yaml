@@ -19,8 +19,12 @@ controller_server:
     goal_checker_plugins: ["general_goal_checker"]
     controller_plugins: ["FollowPath"]
     progress_checker:
-      plugin: nav2_controller::SimpleProgressChecker
+      # Count a meaningful in-place turn as progress. The previous
+      # SimpleProgressChecker only measured translation, so Rotation Shim could
+      # be reported as stuck even while the robot was rotating correctly.
+      plugin: nav2_controller::PoseProgressChecker
       required_movement_radius: 0.15
+      required_movement_angle: 0.20
       movement_time_allowance: 15.0
     general_goal_checker:
       plugin: nav2_controller::SimpleGoalChecker
@@ -28,26 +32,41 @@ controller_server:
       yaw_goal_tolerance: 0.20
       stateful: true
     FollowPath:
-      plugin: dwb_core::DWBLocalPlanner
+      # Align to a newly received path with an in-place rotation before DWB
+      # starts translating. A 20-degree engage threshold favors pivot turns
+      # without interrupting small corridor-heading corrections.
+      plugin: nav2_rotation_shim_controller::RotationShimController
+      primary_controller: dwb_core::DWBLocalPlanner
+      angular_dist_threshold: 0.35
+      # At the 2.67 rad/s pivot limit, one 10 Hz control step is about
+      # 0.27 rad. Hand the last small correction to DWB before overshoot.
+      angular_disengage_threshold: 0.29
+      forward_sampling_distance: 0.35
+      rotate_to_heading_angular_vel: 2.67
+      max_angular_accel: 3.00
+      simulate_ahead_time: 1.0
+      rotate_to_goal_heading: true
+      closed_loop: true
       debug_trajectory_details: true
       min_vel_x: 0.0
       min_vel_y: 0.0
-      # Match the standalone Xbox UART envelope. Autonomous modes still keep
-      # collision-monitor slowdown and stop polygons enabled near obstacles.
-      max_vel_x: 0.60
+      # Cap autonomous translation at 80% of the Xbox/UART envelope. Moving
+      # path turns use 95%; Rotation Shim pivots use the full 100% above.
+      # Manual LB override and the UART hardware limit remain at 100%.
+      max_vel_x: 0.48
       max_vel_y: 0.0
-      max_vel_theta: 2.67
+      max_vel_theta: 2.54
       min_speed_xy: 0.0
-      max_speed_xy: 0.60
+      max_speed_xy: 0.48
       min_speed_theta: 0.0
       # Accel raised with the speed cap so the robot clears the motor stiction
       # zone quickly instead of stalling at the low end of a velocity ramp.
       acc_lim_x: 0.80
       acc_lim_y: 0.0
-      acc_lim_theta: 2.50
+      acc_lim_theta: 2.80
       decel_lim_x: -1.00
       decel_lim_y: 0.0
-      decel_lim_theta: -2.50
+      decel_lim_theta: -2.80
       vx_samples: 15
       vy_samples: 1
       vtheta_samples: 20
@@ -103,7 +122,7 @@ local_costmap:
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         cost_scaling_factor: 4.0
-        inflation_radius: 0.35
+        inflation_radius: 0.30
       always_send_full_costmap: true
 
 global_costmap:
@@ -139,13 +158,15 @@ global_costmap:
       inflation_layer:
         plugin: nav2_costmap_2d::InflationLayer
         cost_scaling_factor: 4.0
-        inflation_radius: 0.35
+        inflation_radius: 0.30
       always_send_full_costmap: true
 
 planner_server:
   ros__parameters:
     use_sim_time: false
-    expected_planner_frequency: 5.0
+    # The custom NavigateToPose BT requests a new global path at 0.5 Hz.
+    # This is a diagnostic threshold; the BT RateController sets the real rate.
+    expected_planner_frequency: 0.5
     planner_plugins: ["GridBased"]
     GridBased:
       plugin: nav2_navfn_planner/NavfnPlanner
@@ -185,8 +206,8 @@ behavior_server:
     transform_tolerance: 0.3
     simulate_ahead_time: 2.0
     max_rotational_vel: 2.67
-    min_rotational_vel: 0.15
-    rotational_acc_lim: 0.80
+    min_rotational_vel: 0.20
+    rotational_acc_lim: 1.50
 
 waypoint_follower:
   ros__parameters:
@@ -205,11 +226,11 @@ velocity_smoother:
     smoothing_frequency: 10.0
     scale_velocities: false
     feedback: OPEN_LOOP
-    # Match the standalone Xbox UART envelope and DWB limits above.
-    max_velocity: [0.60, 0.0, 2.67]
-    min_velocity: [-0.60, 0.0, -2.67]
-    max_accel: [0.80, 0.0, 2.50]
-    max_decel: [-1.00, 0.0, -2.50]
+    # Pass the 80% translation and full-speed Rotation Shim pivot commands.
+    max_velocity: [0.48, 0.0, 2.67]
+    min_velocity: [-0.48, 0.0, -2.67]
+    max_accel: [0.80, 0.0, 3.00]
+    max_decel: [-1.00, 0.0, -3.00]
     odom_topic: /odom
     odom_duration: 0.1
     deadband_velocity: [0.0, 0.0, 0.0]

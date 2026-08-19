@@ -1,0 +1,37 @@
+collision_monitor:
+  ros__parameters:
+    use_sim_time: false
+    base_frame_id: base_link
+    odom_frame_id: odom
+    cmd_vel_in_topic: /cmd_vel_selected
+    cmd_vel_out_topic: /cmd_vel_safe
+    transform_tolerance: 1.0
+    source_timeout: 0.75
+    base_shift_correction: false
+    stop_pub_timeout: 1.0
+    polygons: ["PolygonStop", "PolygonSlow"]
+    PolygonStop:
+      type: polygon
+      # Robot envelope x +/-0.275 m, y +/-0.30 m. Stop 0.15 m before contact.
+      points: [0.43, 0.38, 0.43, -0.38, -0.33, -0.38, -0.33, 0.38]
+      action_type: stop
+      max_points: 10
+      visualize: true
+      polygon_pub_topic: polygon_stop
+      enabled: true
+    PolygonSlow:
+      type: polygon
+      # Preserve the stop polygon above, but avoid slowing for a parallel wall
+      # until it is close to the stop margin. Keep a larger forward lookahead.
+      points: [0.65, 0.40, 0.65, -0.40, -0.38, -0.40, -0.38, 0.40]
+      action_type: slowdown
+      max_points: 5
+      slowdown_ratio: 0.80
+      visualize: true
+      polygon_pub_topic: polygon_slowdown
+      enabled: true
+    observation_sources: ["scan"]
+    scan:
+      type: scan
+      topic: /scan
+      enabled: true

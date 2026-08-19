@@ -8,6 +8,8 @@
     enable_infra2: false
     # Keep one common RViz preview profile across every drive-capable mode.
     rgb_camera.color_profile: 640x480x15
+    color_qos: SENSOR_DATA
+    rgb_camera.frames_queue_size: 2
     rgb_camera.power_line_frequency: 2
     enable_sync: false
     align_depth.enable: false

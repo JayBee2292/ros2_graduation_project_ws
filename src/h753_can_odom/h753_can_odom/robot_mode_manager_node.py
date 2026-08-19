@@ -15,9 +15,10 @@ from pathlib import Path
 from typing import TextIO
 
 import rclpy
+import yaml
 from action_msgs.srv import CancelGoal
 from ament_index_python.packages import get_package_share_directory
-from geometry_msgs.msg import Twist
+from geometry_msgs.msg import PoseWithCovarianceStamped, Twist
 from lifecycle_msgs.msg import State
 from lifecycle_msgs.srv import GetState
 from rcl_interfaces.msg import Parameter as ParameterMessage
@@ -62,6 +63,13 @@ MODE_DESCRIPTIONS = {
 TOPOLOGY_MAPPING = 'mapping'
 TOPOLOGY_LOCALIZATION = 'localization'
 TOPOLOGY_INSPECTION = 'inspection'
+
+LOCALIZATION_BACKEND_SLAM_TOOLBOX = 'slam_toolbox'
+LOCALIZATION_BACKEND_AMCL = 'amcl'
+VALID_LOCALIZATION_BACKENDS = (
+    LOCALIZATION_BACKEND_SLAM_TOOLBOX,
+    LOCALIZATION_BACKEND_AMCL,
+)
 
 MODE_TOPOLOGY = {
     MODE_MANUAL_MAPPING: TOPOLOGY_MAPPING,
@@ -151,6 +159,86 @@ def bool_text(value: bool) -> str:
     return 'true' if value else 'false'
 
 
+def normalize_localization_backend(value: str) -> str:
+    backend = value.strip().lower()
+    if backend not in VALID_LOCALIZATION_BACKENDS:
+        choices = ', '.join(VALID_LOCALIZATION_BACKENDS)
+        raise ValueError(
+            f'localization_backend must be one of: {choices}; got {value!r}'
+        )
+    return backend
+
+
+def occupancy_map_image_path(map_yaml: Path) -> Path | None:
+    if not map_yaml.is_file():
+        return None
+    try:
+        with map_yaml.open('r', encoding='utf-8') as stream:
+            data = yaml.safe_load(stream) or {}
+    except (OSError, yaml.YAMLError):
+        return None
+    image_value = data.get('image')
+    if not isinstance(image_value, str) or not image_value.strip():
+        return None
+    image_path = Path(image_value).expanduser()
+    if not image_path.is_absolute():
+        image_path = map_yaml.parent / image_path
+    return image_path.resolve()
+
+
+def static_map_exists(map_yaml: Path) -> bool:
+    image_path = occupancy_map_image_path(map_yaml)
+    return image_path is not None and image_path.is_file()
+
+
+def saved_map_available_for_mode(
+    mode: int,
+    localization_backend: str,
+    posegraph_exists: bool,
+    occupancy_map_exists: bool,
+) -> bool:
+    if mode in (MODE_MANUAL_LOCALIZATION, MODE_GOAL_NAVIGATION):
+        if localization_backend == LOCALIZATION_BACKEND_AMCL:
+            return occupancy_map_exists
+        return posegraph_exists
+    if mode == MODE_DISASTER_MAPPING:
+        return posegraph_exists
+    return True
+
+
+def localization_allows_autonomous_drive(
+    mode: int,
+    localization_backend: str,
+    amcl_pose_received: bool,
+) -> bool:
+    return not (
+        mode == MODE_GOAL_NAVIGATION
+        and localization_backend == LOCALIZATION_BACKEND_AMCL
+        and not amcl_pose_received
+    )
+
+
+def should_reseed_amcl_pose(
+    current_mode: int,
+    requested_mode: int,
+    current_topology: str | None,
+    requested_topology: str,
+    localization_backend: str,
+    pose_available: bool,
+) -> bool:
+    return (
+        current_mode in (MODE_MANUAL_LOCALIZATION, MODE_GOAL_NAVIGATION)
+        and requested_mode in (
+            MODE_MANUAL_LOCALIZATION,
+            MODE_GOAL_NAVIGATION,
+        )
+        and current_topology == TOPOLOGY_LOCALIZATION
+        and requested_topology == TOPOLOGY_LOCALIZATION
+        and localization_backend == LOCALIZATION_BACKEND_AMCL
+        and pose_available
+    )
+
+
 def should_resume_saved_map(
     mode: int,
     posegraph_exists: bool,
@@ -213,15 +301,53 @@ def should_launch_perception(
     return launch_enabled and camera_enabled and mode in enabled_modes
 
 
+def integrated_collision_polygon_enablement(_mode: int) -> tuple[bool, bool]:
+    """Return stop/slow polygon states for the integrated mode runtime.
+
+    Nav2 costmaps own obstacle avoidance in integrated modes. Collision monitor
+    stays in the command path for lifecycle and deadman handling, but its
+    polygon speed-state machine remains disabled exactly as in Mode 5.
+    """
+    return False, False
+
+
 def drive_limits_for_mode(
-    _mode: int,
+    mode: int,
     unified_limits: tuple[float, float],
+    mapping_limits: tuple[float, float],
 ) -> tuple[float, float]:
     # Pseudocode:
-    #   every drive-capable mode -> the same physical drive envelope
-    # Mode-specific behavior only chooses the command source. Final physical
-    # bounding is repeated in the UART bridge as a defense-in-depth guard.
+    #   mapping modes 1/2/6 -> scan-motion-safe mapping envelope
+    #   localization/inspection modes -> normal physical drive envelope
+    # The UART bridge still owns the final physical bounds and stiction floor.
+    if mode in (
+        MODE_MANUAL_MAPPING,
+        MODE_AUTO_MAPPING,
+        MODE_DISASTER_MAPPING,
+    ):
+        return mapping_limits
     return unified_limits
+
+
+def limit_planar_twist(
+    twist: Twist,
+    limits: tuple[float, float],
+) -> Twist:
+    """Scale planar velocity into both limits while preserving curvature."""
+    max_linear_mps, max_angular_radps = limits
+    if max_linear_mps <= 0.0 or max_angular_radps <= 0.0:
+        return Twist()
+
+    scale = 1.0
+    if abs(twist.linear.x) > max_linear_mps:
+        scale = min(scale, max_linear_mps / abs(twist.linear.x))
+    if abs(twist.angular.z) > max_angular_radps:
+        scale = min(scale, max_angular_radps / abs(twist.angular.z))
+
+    limited = Twist()
+    limited.linear.x = twist.linear.x * scale
+    limited.angular.z = twist.angular.z * scale
+    return limited
 
 
 def select_autonomous_drive_twist(
@@ -271,6 +397,15 @@ class RobotModeManagerNode(Node):
             'posegraph_file',
             '/home/jyl1015/ros2_graduation_project_ws/maps/h753_map',
         )
+        self.declare_parameter('localization_backend', 'amcl')
+        self.declare_parameter(
+            'static_map_yaml',
+            '/home/jyl1015/ros2_graduation_project_ws/'
+            'maps/go2/go2_map.yaml',
+        )
+        self.declare_parameter('amcl_params', '')
+        self.declare_parameter('amcl_pose_topic', '/amcl_pose')
+        self.declare_parameter('initial_pose_topic', '/initialpose')
         self.declare_parameter('runtime_log_directory', '~/.ros/log/h753_robot_modes')
         self.declare_parameter('launch_lidar', True)
         self.declare_parameter('launch_odom', True)
@@ -310,8 +445,10 @@ class RobotModeManagerNode(Node):
         self.declare_parameter('deadzone', 0.15)
         self.declare_parameter('drive_max_linear_mps', 0.60)
         self.declare_parameter('drive_max_angular_radps', 2.67)
-        self.declare_parameter('track_gauge_m', 0.50)
-        self.declare_parameter('moving_inner_ratio', 0.40)
+        self.declare_parameter('mapping_max_linear_mps', 0.60)
+        self.declare_parameter('mapping_max_angular_radps', 2.67)
+        self.declare_parameter('track_gauge_m', 0.45)
+        self.declare_parameter('moving_inner_ratio', 0.75)
         self.declare_parameter('left_stick_y_axis', 1)
         self.declare_parameter('right_stick_x_axis', 3)
         self.declare_parameter('dpad_y_axis', 7)
@@ -323,6 +460,18 @@ class RobotModeManagerNode(Node):
         self.declare_parameter('menu_hold_stop_s', 2.0)
 
         self.posegraph_file = Path(str(self.get_parameter('posegraph_file').value)).expanduser()
+        self.localization_backend = normalize_localization_backend(
+            str(self.get_parameter('localization_backend').value)
+        )
+        self.static_map_yaml = Path(
+            str(self.get_parameter('static_map_yaml').value)
+        ).expanduser()
+        amcl_params_value = str(self.get_parameter('amcl_params').value).strip()
+        self.amcl_params = (
+            Path(amcl_params_value).expanduser()
+            if amcl_params_value
+            else None
+        )
         self.runtime_log_directory = Path(
             str(self.get_parameter('runtime_log_directory').value)
         ).expanduser()
@@ -370,6 +519,22 @@ class RobotModeManagerNode(Node):
         self.drive_max_angular_radps = float(
             self.get_parameter('drive_max_angular_radps').value
         )
+        self.mapping_max_linear_mps = float(
+            self.get_parameter('mapping_max_linear_mps').value
+        )
+        self.mapping_max_angular_radps = float(
+            self.get_parameter('mapping_max_angular_radps').value
+        )
+        if (
+            self.mapping_max_linear_mps <= 0.0
+            or self.mapping_max_angular_radps <= 0.0
+        ):
+            raise ValueError('mapping speed limits must be positive')
+        if (
+            self.mapping_max_linear_mps > self.drive_max_linear_mps
+            or self.mapping_max_angular_radps > self.drive_max_angular_radps
+        ):
+            raise ValueError('mapping speed limits must not exceed drive limits')
         self.track_gauge_m = float(self.get_parameter('track_gauge_m').value)
         self.moving_inner_ratio = float(self.get_parameter('moving_inner_ratio').value)
         self.left_stick_y_axis = int(self.get_parameter('left_stick_y_axis').value)
@@ -409,6 +574,13 @@ class RobotModeManagerNode(Node):
         self.collision_safety_request_id = 0
         self.last_collision_safety_warning_at: float | None = None
         self.yolo_person_detected: bool | None = None
+        self.amcl_pose_received = False
+        self.amcl_wait_warning_reported = False
+        self.last_amcl_pose: PoseWithCovarianceStamped | None = None
+        self.reseed_amcl_on_next_start = False
+        self.amcl_reseed_pending = False
+        self.amcl_reseed_not_before: float | None = None
+        self.amcl_reseed_reported = False
 
         latched_qos = QoSProfile(depth=1)
         latched_qos.durability = DurabilityPolicy.TRANSIENT_LOCAL
@@ -427,6 +599,11 @@ class RobotModeManagerNode(Node):
             Bool,
             str(self.get_parameter('frontier_enabled_topic').value),
             latched_qos,
+        )
+        self.initial_pose_pub = self.create_publisher(
+            PoseWithCovarianceStamped,
+            str(self.get_parameter('initial_pose_topic').value),
+            10,
         )
         self.create_subscription(
             Joy,
@@ -452,6 +629,12 @@ class RobotModeManagerNode(Node):
             self._yolo_person_found_callback,
             10,
         )
+        self.create_subscription(
+            PoseWithCovarianceStamped,
+            str(self.get_parameter('amcl_pose_topic').value),
+            self._amcl_pose_callback,
+            10,
+        )
         self.cancel_nav_client = self.create_client(
             CancelGoal,
             '/navigate_to_pose/_action/cancel_goal',
@@ -475,6 +658,7 @@ class RobotModeManagerNode(Node):
         self.create_timer(0.05, self._keyboard_timer_callback)
         self.create_timer(0.50, self._runtime_monitor_callback)
         self.create_timer(0.50, self._sync_collision_safety)
+        self.create_timer(0.50, self._reseed_amcl_pose_if_needed)
         self.create_timer(1.0, self._joy_monitor_callback)
 
         self._enable_terminal_input()
@@ -522,6 +706,36 @@ class RobotModeManagerNode(Node):
         self.nav_twist = msg
         self.last_nav_at = time.monotonic()
 
+    def _amcl_pose_callback(self, msg: PoseWithCovarianceStamped) -> None:
+        if not self.amcl_pose_received:
+            self.get_logger().info(
+                'AMCL pose received; autonomous navigation is now enabled'
+            )
+        self.amcl_pose_received = True
+        self.amcl_wait_warning_reported = False
+        self.last_amcl_pose = msg
+        self.amcl_reseed_pending = False
+        self.amcl_reseed_not_before = None
+        self.amcl_reseed_reported = False
+
+    def _reseed_amcl_pose_if_needed(self) -> None:
+        if (
+            not self.amcl_reseed_pending
+            or self.amcl_pose_received
+            or self.last_amcl_pose is None
+            or self.amcl_reseed_not_before is None
+            or time.monotonic() < self.amcl_reseed_not_before
+        ):
+            return
+        self.last_amcl_pose.header.stamp = self.get_clock().now().to_msg()
+        self.last_amcl_pose.header.frame_id = 'map'
+        self.initial_pose_pub.publish(self.last_amcl_pose)
+        if not self.amcl_reseed_reported:
+            self.get_logger().info(
+                'Re-published the last AMCL pose after Mode 3/4 runtime restart'
+            )
+            self.amcl_reseed_reported = True
+
     def _mode_request_callback(self, msg: UInt8) -> None:
         self.request_mode(int(msg.data), source='ROS topic')
 
@@ -566,23 +780,38 @@ class RobotModeManagerNode(Node):
             self.get_logger().warn(f'Mode 0 STOP selected from {source}')
             return
 
-        if requested_mode in (
-            MODE_MANUAL_LOCALIZATION,
-            MODE_GOAL_NAVIGATION,
-            MODE_DISASTER_MAPPING,
+        posegraph_exists = self._posegraph_exists()
+        occupancy_map_exists = static_map_exists(self.static_map_yaml)
+        if not saved_map_available_for_mode(
+            requested_mode,
+            self.localization_backend,
+            posegraph_exists,
+            occupancy_map_exists,
         ):
-            if not self._posegraph_exists():
-                self.mode = MODE_STOP
-                self.menu_selection = MODE_STOP
-                self._publish_mode()
+            self.mode = MODE_STOP
+            self.menu_selection = MODE_STOP
+            self._publish_mode()
+            if (
+                requested_mode in (
+                    MODE_MANUAL_LOCALIZATION,
+                    MODE_GOAL_NAVIGATION,
+                )
+                and self.localization_backend == LOCALIZATION_BACKEND_AMCL
+            ):
+                image_path = occupancy_map_image_path(self.static_map_yaml)
+                self.get_logger().error(
+                    f'Mode {requested_mode} requires a valid occupancy map: '
+                    f'YAML={self.static_map_yaml}, image={image_path}'
+                )
+            else:
                 self.get_logger().error(
                     f'Mode {requested_mode} requires saved map files: '
-                    f'{self.posegraph_file}.posegraph and {self.posegraph_file}.data'
+                    f'{self.posegraph_file}.posegraph and '
+                    f'{self.posegraph_file}.data'
                 )
-                return
+            return
 
         requested_topology = MODE_TOPOLOGY[requested_mode]
-        posegraph_exists = self._posegraph_exists()
         resume_saved_map = should_resume_saved_map(
             requested_mode,
             posegraph_exists,
@@ -616,6 +845,14 @@ class RobotModeManagerNode(Node):
             )
         )
         if runtime_needs_restart:
+            self.reseed_amcl_on_next_start = should_reseed_amcl_pose(
+                self.mode,
+                requested_mode,
+                self.runtime.topology if self.runtime is not None else None,
+                requested_topology,
+                self.localization_backend,
+                self.last_amcl_pose is not None,
+            )
             self._stop_runtime()
             if not self._start_runtime(
                 requested_topology,
@@ -662,30 +899,47 @@ class RobotModeManagerNode(Node):
     def _selected_twist(self) -> Twist:
         if self.menu_open:
             return Twist()
+        selected = Twist()
         if self.mode in (
             MODE_MANUAL_MAPPING,
             MODE_MANUAL_LOCALIZATION,
             MODE_INSPECTION_DRIVE,
         ):
             if self._is_fresh(self.last_keyboard_at, self.keyboard_hold_s):
-                return self.keyboard_twist
-            if self._is_fresh(self.last_joy_at, self.joy_timeout_s):
-                return self.joy_twist
-            return Twist()
-        if self.mode in (
+                selected = self.keyboard_twist
+            elif self._is_fresh(self.last_joy_at, self.joy_timeout_s):
+                selected = self.joy_twist
+        elif self.mode in (
             MODE_AUTO_MAPPING,
             MODE_GOAL_NAVIGATION,
             MODE_DISASTER_MAPPING,
         ):
-            return select_autonomous_drive_twist(
+            nav_fresh = self._is_fresh(
+                self.last_nav_at,
+                self.nav_timeout_s,
+            )
+            localization_ready = localization_allows_autonomous_drive(
+                self.mode,
+                self.localization_backend,
+                self.amcl_pose_received,
+            )
+            if nav_fresh and not localization_ready:
+                if not self.amcl_wait_warning_reported:
+                    self.get_logger().warn(
+                        'Nav2 command blocked: set the Go2-map pose with '
+                        'RViz 2D Pose Estimate first'
+                    )
+                    self.amcl_wait_warning_reported = True
+            selected = select_autonomous_drive_twist(
                 self.collision_safety_applied,
                 self.joy_override_held,
                 self._is_fresh(self.last_joy_at, self.joy_timeout_s),
                 self.joy_twist,
-                self._is_fresh(self.last_nav_at, self.nav_timeout_s),
+                nav_fresh and localization_ready,
                 self.nav_twist,
             )
-        return Twist()
+
+        return limit_planar_twist(selected, self._manual_limits())
 
     def _joy_to_twist(self, msg: Joy) -> Twist:
         max_linear, max_angular = self._manual_limits()
@@ -840,7 +1094,27 @@ class RobotModeManagerNode(Node):
             return False
 
         h753_share = Path(get_package_share_directory('h753_can_odom'))
-        collision_params = h753_share / 'config' / 'h753_collision_monitor_modes.yaml'
+        use_amcl_localization = (
+            topology == TOPOLOGY_LOCALIZATION
+            and self.localization_backend == LOCALIZATION_BACKEND_AMCL
+        )
+        # Keep integrated Mode 4 command handling identical to Mode 5: the
+        # collision monitor remains active as a pass-through/deadman stage,
+        # while Nav2 costmaps own obstacle avoidance. The Go2 standalone test
+        # launches retain their separate collision-polygon configuration.
+        collision_params = (
+            h753_share / 'config' / 'h753_collision_monitor_modes.yaml'
+        )
+        amcl_params = (
+            self.amcl_params
+            if self.amcl_params is not None
+            else h753_share / 'config' / 'h753_go2_amcl.yaml'
+        )
+        if use_amcl_localization and not amcl_params.is_file():
+            self.get_logger().error(
+                f'AMCL parameter file is missing: {amcl_params}'
+            )
+            return False
         if perception_enabled:
             if not (
                 self.yolo_python_executable.is_file()
@@ -899,6 +1173,9 @@ class RobotModeManagerNode(Node):
             )
             launch_args = common_args + [
                 f'posegraph_file:={self.posegraph_file}',
+                f'localization_backend:={self.localization_backend}',
+                f'static_map_yaml:={self.static_map_yaml}',
+                f'amcl_params:={amcl_params}',
                 f'realsense_params:={realsense_profile}',
                 f'launch_yolo_perception:={bool_text(perception_enabled)}',
                 f'yolo_python_executable:={self.yolo_python_executable}',
@@ -933,6 +1210,24 @@ class RobotModeManagerNode(Node):
         # A CLion snap terminal exports SNAP_COMMON. The system slam_toolbox
         # package interprets that as its own snap runtime and rewrites map paths.
         child_env.pop('SNAP_COMMON', None)
+        if use_amcl_localization:
+            self.amcl_pose_received = False
+            self.amcl_wait_warning_reported = False
+            self.amcl_reseed_pending = (
+                self.reseed_amcl_on_next_start
+                and self.last_amcl_pose is not None
+            )
+            self.amcl_reseed_not_before = (
+                time.monotonic() + 2.5
+                if self.amcl_reseed_pending
+                else None
+            )
+            self.amcl_reseed_reported = False
+        else:
+            self.amcl_reseed_pending = False
+            self.amcl_reseed_not_before = None
+            self.amcl_reseed_reported = False
+        self.reseed_amcl_on_next_start = False
         try:
             process = subprocess.Popen(
                 command,
@@ -944,6 +1239,8 @@ class RobotModeManagerNode(Node):
             )
         except OSError as exc:
             log_stream.close()
+            self.amcl_reseed_pending = False
+            self.amcl_reseed_not_before = None
             self.get_logger().error(f'Failed to start {topology} runtime: {exc}')
             return False
         self.runtime = RuntimeProcess(
@@ -958,6 +1255,11 @@ class RobotModeManagerNode(Node):
         self.get_logger().info(
             f'Started {topology} runtime pid={process.pid}; log={log_path}'
         )
+        if use_amcl_localization:
+            self.get_logger().warn(
+                f'AMCL is using {self.static_map_yaml}; set the initial pose '
+                'with RViz 2D Pose Estimate before autonomous driving'
+            )
         if resume_posegraph:
             self.get_logger().warn(
                 f'Continuing saved map {self.posegraph_file}; place the robot '
@@ -971,6 +1273,8 @@ class RobotModeManagerNode(Node):
             return
         runtime = self.runtime
         self.runtime = None
+        self.amcl_reseed_pending = False
+        self.amcl_reseed_not_before = None
         self._reset_collision_safety_state()
         if rclpy.ok():
             self.get_logger().info(
@@ -1025,6 +1329,8 @@ class RobotModeManagerNode(Node):
             return
         runtime = self.runtime
         self.runtime = None
+        self.amcl_reseed_pending = False
+        self.amcl_reseed_not_before = None
         runtime.log_stream.close()
         self.mode = MODE_STOP
         self.menu_selection = MODE_STOP
@@ -1200,12 +1506,19 @@ class RobotModeManagerNode(Node):
                 self._warn_collision_safety_unavailable()
             return
 
+        stop_polygon_enabled, slow_polygon_enabled = (
+            integrated_collision_polygon_enablement(self.mode)
+        )
         request = SetParameters.Request()
         request.parameters = [
-            # PolygonStop disabled: Nav2 costmap + inflation handles forward
-            # obstacle avoidance. Re-enable after navigation is verified.
-            self._bool_parameter('PolygonStop.enabled', False),
-            self._bool_parameter('PolygonSlow.enabled', enabled),
+            self._bool_parameter(
+                'PolygonStop.enabled',
+                stop_polygon_enabled,
+            ),
+            self._bool_parameter(
+                'PolygonSlow.enabled',
+                slow_polygon_enabled,
+            ),
         ]
         self.collision_safety_request_pending = True
         self.collision_safety_request_started_at = time.monotonic()
@@ -1235,8 +1548,13 @@ class RobotModeManagerNode(Node):
             )
             return
         self.collision_safety_applied = enabled
+        stop_polygon_enabled, slow_polygon_enabled = (
+            integrated_collision_polygon_enablement(self.mode)
+        )
         self.get_logger().info(
-            f'Collision polygons enabled={enabled} for mode {self.mode}'
+            f'Collision monitor synchronized for mode {self.mode}: '
+            f'stop_polygon={stop_polygon_enabled}, '
+            f'slow_polygon={slow_polygon_enabled}'
         )
         self._sync_collision_safety()
 
@@ -1340,6 +1658,10 @@ class RobotModeManagerNode(Node):
             (
                 self.drive_max_linear_mps,
                 self.drive_max_angular_radps,
+            ),
+            (
+                self.mapping_max_linear_mps,
+                self.mapping_max_angular_radps,
             ),
         )
 

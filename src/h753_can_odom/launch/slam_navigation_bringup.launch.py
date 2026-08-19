@@ -2,7 +2,12 @@ from pathlib import Path
 
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, GroupAction, IncludeLaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument,
+    GroupAction,
+    IncludeLaunchDescription,
+    TimerAction,
+)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import LaunchConfiguration, PythonExpression
@@ -37,6 +42,10 @@ def generate_launch_description():
     uart_port = LaunchConfiguration('uart_port')
     rviz_config = LaunchConfiguration('rviz_config')
     nav2_bond_timeout = LaunchConfiguration('nav2_bond_timeout')
+    nav_to_pose_bt_xml = LaunchConfiguration('nav_to_pose_bt_xml')
+    collision_monitor_start_delay_s = LaunchConfiguration(
+        'collision_monitor_start_delay_s'
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument('launch_lidar', default_value='true'),
@@ -73,6 +82,14 @@ def generate_launch_description():
             description='Lifecycle heartbeat timeout for a loaded Jetson.',
         ),
         DeclareLaunchArgument(
+            'collision_monitor_start_delay_s',
+            default_value='1.5',
+            description=(
+                'Delay the collision lifecycle manager until its node services '
+                'are ready.'
+            ),
+        ),
+        DeclareLaunchArgument(
             'slam_params',
             default_value=str(h753_share / 'config' / 'h753_slam_toolbox.yaml'),
         ),
@@ -89,6 +106,15 @@ def generate_launch_description():
         DeclareLaunchArgument(
             'nav2_params',
             default_value=str(h753_share / 'config' / 'h753_nav2.yaml'),
+        ),
+        DeclareLaunchArgument(
+            'nav_to_pose_bt_xml',
+            default_value=str(
+                h753_share
+                / 'behavior_trees'
+                / 'navigate_to_pose_w_replanning_0_5hz.xml'
+            ),
+            description='NavigateToPose BT with reduced global replanning load.',
         ),
         DeclareLaunchArgument(
             'collision_monitor_params',
@@ -146,6 +172,10 @@ def generate_launch_description():
                     name='bond_timeout',
                     value=ParameterValue(nav2_bond_timeout, value_type=float),
                 ),
+                SetParameter(
+                    name='default_nav_to_pose_bt_xml',
+                    value=ParameterValue(nav_to_pose_bt_xml, value_type=str),
+                ),
                 IncludeLaunchDescription(
                     PythonLaunchDescriptionSource(
                         str(nav2_share / 'launch' / 'navigation_launch.py')
@@ -167,16 +197,23 @@ def generate_launch_description():
             output='screen',
             parameters=[collision_monitor_params],
         ),
-        Node(
-            package='nav2_lifecycle_manager',
-            executable='lifecycle_manager',
-            name='lifecycle_manager_collision_monitor',
-            output='screen',
-            parameters=[{
-                'use_sim_time': False,
-                'autostart': True,
-                'node_names': ['collision_monitor'],
-            }],
+        TimerAction(
+            # Keep the lifecycle client alive until collision_monitor has
+            # finished creating its transition services on a loaded Jetson.
+            period=collision_monitor_start_delay_s,
+            actions=[
+                Node(
+                    package='nav2_lifecycle_manager',
+                    executable='lifecycle_manager',
+                    name='lifecycle_manager_collision_monitor',
+                    output='screen',
+                    parameters=[{
+                        'use_sim_time': False,
+                        'autostart': True,
+                        'node_names': ['collision_monitor'],
+                    }],
+                ),
+            ],
         ),
         Node(
             package='h753_can_odom',

@@ -1,11 +1,48 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass
+import math
 
 import cv2
 import numpy as np
 
 Box = tuple[int, int, int, int]
+
+
+@dataclass
+class DetectionClearHold:
+    """Assert immediately and clear only after continuous raw absence."""
+
+    clear_hold_s: float
+    active: bool = False
+    clear_since: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.clear_hold_s < 0.0 or not math.isfinite(self.clear_hold_s):
+            raise ValueError('clear_hold_s must be finite and non-negative')
+
+    def update(self, raw_active: bool, now: float) -> bool:
+        if raw_active:
+            self.active = True
+            self.clear_since = None
+            return self.active
+
+        if not self.active:
+            self.clear_since = None
+            return self.active
+
+        if self.clear_hold_s == 0.0:
+            self.active = False
+            self.clear_since = None
+            return self.active
+
+        if self.clear_since is None:
+            self.clear_since = now
+        elif now - self.clear_since >= self.clear_hold_s:
+            self.active = False
+            self.clear_since = None
+        return self.active
 
 
 def clip_box(box: Sequence[int], width: int, height: int) -> Box:

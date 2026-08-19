@@ -7,6 +7,7 @@ from launch.actions import (
     ExecuteProcess,
     GroupAction,
     IncludeLaunchDescription,
+    TimerAction,
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -36,6 +37,9 @@ def generate_launch_description():
     vlm_gateway_params = LaunchConfiguration('vlm_gateway_params')
     uart_port = LaunchConfiguration('uart_port')
     rviz_config = LaunchConfiguration('rviz_config')
+    collision_monitor_start_delay_s = LaunchConfiguration(
+        'collision_monitor_start_delay_s'
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument('launch_lidar', default_value='true'),
@@ -63,6 +67,14 @@ def generate_launch_description():
         DeclareLaunchArgument('launch_odom', default_value='true'),
         DeclareLaunchArgument('launch_uart_bridge', default_value='true'),
         DeclareLaunchArgument('launch_rviz', default_value='true'),
+        DeclareLaunchArgument(
+            'collision_monitor_start_delay_s',
+            default_value='1.5',
+            description=(
+                'Delay the collision lifecycle manager until its node services '
+                'are ready.'
+            ),
+        ),
         DeclareLaunchArgument(
             'collision_monitor_params',
             default_value=str(h753_share / 'config' / 'h753_collision_monitor_modes.yaml'),
@@ -112,16 +124,21 @@ def generate_launch_description():
             output='screen',
             parameters=[collision_monitor_params],
         ),
-        Node(
-            package='nav2_lifecycle_manager',
-            executable='lifecycle_manager',
-            name='lifecycle_manager_collision_monitor',
-            output='screen',
-            parameters=[{
-                'use_sim_time': False,
-                'autostart': True,
-                'node_names': ['collision_monitor'],
-            }],
+        TimerAction(
+            period=collision_monitor_start_delay_s,
+            actions=[
+                Node(
+                    package='nav2_lifecycle_manager',
+                    executable='lifecycle_manager',
+                    name='lifecycle_manager_collision_monitor',
+                    output='screen',
+                    parameters=[{
+                        'use_sim_time': False,
+                        'autostart': True,
+                        'node_names': ['collision_monitor'],
+                    }],
+                ),
+            ],
         ),
         Node(
             package='h753_can_odom',

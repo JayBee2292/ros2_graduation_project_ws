@@ -1,0 +1,207 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1800" height="1200" viewBox="0 0 1800 1200" role="img" aria-labelledby="title desc">
+  <title id="title">구조 로봇 시스템: 현재 구현과 개선 목표</title>
+  <desc id="desc">젯슨 PC와 서버 PC의 역할, 현재 구현, 수정 필요, 신규 구현을 한눈에 구분한 아키텍처 구조도</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#F7FAFC"/>
+      <stop offset="100%" stop-color="#EEF3F8"/>
+    </linearGradient>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="130%">
+      <feDropShadow dx="0" dy="5" stdDeviation="7" flood-color="#17324D" flood-opacity="0.12"/>
+    </filter>
+    <marker id="arrowDark" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#35516C"/>
+    </marker>
+    <marker id="arrowBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#2F6FED"/>
+    </marker>
+    <style>
+      text { font-family: 'Noto Sans CJK KR', 'Noto Sans KR', 'Malgun Gothic', sans-serif; }
+      .title { font-size: 38px; font-weight: 700; fill: #142B43; }
+      .subtitle { font-size: 18px; font-weight: 400; fill: #587086; }
+      .columnTitle { font-size: 27px; font-weight: 700; fill: #FFFFFF; }
+      .columnSub { font-size: 15px; font-weight: 400; fill: #DCEAF7; }
+      .boxTitle { font-size: 20px; font-weight: 700; fill: #17324D; }
+      .body { font-size: 15px; font-weight: 400; fill: #29455F; }
+      .small { font-size: 13px; font-weight: 400; fill: #4A6278; }
+      .tag { font-size: 13px; font-weight: 700; }
+      .flow { font-size: 14px; font-weight: 700; fill: #35516C; }
+      .footerTitle { font-size: 16px; font-weight: 700; fill: #17324D; }
+      .footerText { font-size: 14px; font-weight: 400; fill: #35516C; }
+    </style>
+  </defs>
+
+  <rect width="1800" height="1200" fill="url(#bg)"/>
+  <text x="70" y="66" class="title">구조 로봇 시스템 — 현재 구현과 개선 목표</text>
+  <text x="72" y="98" class="subtitle">젯슨은 현장 실시간 제어·인지·자율주행, 서버는 VLM·데이터베이스·GUI를 담당</text>
+
+  <g transform="translate(1195,37)">
+    <rect x="0" y="0" width="535" height="67" rx="16" fill="#FFFFFF" stroke="#D7E1EB"/>
+    <rect x="18" y="17" width="24" height="24" rx="6" fill="#E9F8F0" stroke="#179B63" stroke-width="2"/>
+    <text x="50" y="35" class="small">구현 완료</text>
+    <rect x="168" y="17" width="24" height="24" rx="6" fill="#FFF4D6" stroke="#D69A00" stroke-width="2"/>
+    <text x="200" y="35" class="small">수정·개선</text>
+    <rect x="338" y="17" width="24" height="24" rx="6" fill="#EAF3FF" stroke="#2F6FED" stroke-width="2"/>
+    <text x="370" y="35" class="small">신규 구현</text>
+  </g>
+
+  <!-- Column backgrounds -->
+  <g filter="url(#shadow)">
+    <rect x="55" y="135" width="750" height="890" rx="26" fill="#FFFFFF"/>
+    <rect x="995" y="135" width="750" height="890" rx="26" fill="#FFFFFF"/>
+  </g>
+  <path d="M81 135 H779 Q805 135 805 161 V213 H55 V161 Q55 135 81 135Z" fill="#173F5F"/>
+  <path d="M1021 135 H1719 Q1745 135 1745 161 V213 H995 V161 Q995 135 1021 135Z" fill="#5B3A82"/>
+  <text x="90" y="174" class="columnTitle">젯슨 PC · ROBOT EDGE</text>
+  <text x="90" y="199" class="columnSub">센서 · 인지 · 안전 정지 · SLAM/Nav2 · 경로 계산</text>
+  <text x="1030" y="174" class="columnTitle">서버 PC · VLM &amp; OPERATIONS</text>
+  <text x="1030" y="199" class="columnSub">VLM 추론 · 영속 DB · 파일 저장 · 운영자 GUI</text>
+
+  <!-- Jetson: implemented sensors -->
+  <g>
+    <rect x="85" y="240" width="690" height="105" rx="18" fill="#E9F8F0" stroke="#179B63" stroke-width="2"/>
+    <rect x="105" y="257" width="86" height="25" rx="12" fill="#179B63"/>
+    <text x="121" y="275" class="tag" fill="#FFFFFF">구현 완료</text>
+    <text x="105" y="311" class="boxTitle">센서 및 좌표계</text>
+    <text x="315" y="308" class="body">RealSense · LiDAR · IMU · 엔코더/CAN · TF</text>
+    <text x="315" y="332" class="small">map → odom → base_link → camera / laser</text>
+  </g>
+
+  <!-- Jetson: perception -->
+  <g>
+    <rect x="85" y="365" width="690" height="125" rx="18" fill="#E9F8F0" stroke="#179B63" stroke-width="2"/>
+    <rect x="105" y="382" width="86" height="25" rx="12" fill="#179B63"/>
+    <text x="121" y="400" class="tag" fill="#FFFFFF">구현 완료</text>
+    <text x="105" y="437" class="boxTitle">YOLO 인지</text>
+    <text x="270" y="434" class="body">/yolo/person_found · /yolo/blue_person</text>
+    <text x="105" y="465" class="small">모드 4·5 실행 · confidence/거리/검출 영상 · 0→1 검출 전환 로그</text>
+  </g>
+
+  <!-- Jetson: safety -->
+  <g>
+    <rect x="85" y="510" width="690" height="145" rx="18" fill="#E9F8F0" stroke="#179B63" stroke-width="2"/>
+    <rect x="105" y="527" width="86" height="25" rx="12" fill="#179B63"/>
+    <text x="121" y="545" class="tag" fill="#FFFFFF">구현 완료</text>
+    <text x="105" y="584" class="boxTitle">로컬 안전 정지 및 구동 게이트</text>
+    <text x="105" y="615" class="body">YOLO 상승 신호 → VLM 서버 왕복 없이 즉시 /safety/vlm_stop=1</text>
+    <text x="105" y="641" class="small">h753_vlm_gateway → cmd_vel_uart_bridge → STM/UART 출력 차단</text>
+  </g>
+
+  <!-- Jetson: autonomy -->
+  <g>
+    <rect x="85" y="675" width="330" height="125" rx="18" fill="#E9F8F0" stroke="#179B63" stroke-width="2"/>
+    <rect x="105" y="692" width="86" height="25" rx="12" fill="#179B63"/>
+    <text x="121" y="710" class="tag" fill="#FFFFFF">구현 완료</text>
+    <text x="105" y="748" class="boxTitle">자율주행</text>
+    <text x="105" y="775" class="body">SLAM · 위치 추정 · Nav2</text>
+  </g>
+  <g>
+    <rect x="435" y="675" width="340" height="125" rx="18" fill="#EAF3FF" stroke="#2F6FED" stroke-width="2"/>
+    <rect x="455" y="692" width="86" height="25" rx="12" fill="#2F6FED"/>
+    <text x="471" y="710" class="tag" fill="#FFFFFF">신규 구현</text>
+    <text x="455" y="748" class="boxTitle">부상자 위치·경로</text>
+    <text x="455" y="775" class="body">pose 기록 · 안전 경로 · map revision</text>
+  </g>
+
+  <!-- Jetson: event package -->
+  <g>
+    <rect x="85" y="820" width="690" height="165" rx="18" fill="#EAF3FF" stroke="#2F6FED" stroke-width="2"/>
+    <rect x="105" y="837" width="86" height="25" rx="12" fill="#2F6FED"/>
+    <text x="121" y="855" class="tag" fill="#FFFFFF">신규 구현</text>
+    <rect x="205" y="837" width="86" height="25" rx="12" fill="#D69A00"/>
+    <text x="221" y="855" class="tag" fill="#FFFFFF">통신 개선</text>
+    <text x="105" y="895" class="boxTitle">victim_event_manager + mission_uploader</text>
+    <text x="105" y="925" class="body">UUID · 발견 위치 · 이미지 · 실제/안전 경로 · 지도 revision</text>
+    <text x="105" y="951" class="small">로컬 outbox · checksum · ACK · 연결 복구 후 중복 없는 재전송</text>
+  </g>
+
+  <!-- Server: input -->
+  <g>
+    <rect x="1025" y="240" width="690" height="105" rx="18" fill="#FFF4D6" stroke="#D69A00" stroke-width="2"/>
+    <rect x="1045" y="257" width="86" height="25" rx="12" fill="#D69A00"/>
+    <text x="1061" y="275" class="tag" fill="#FFFFFF">수정·개선</text>
+    <text x="1045" y="311" class="boxTitle">수신 인터페이스</text>
+    <text x="1245" y="308" class="body">ROS 2 호환 유지 + 이벤트/파일 전송 계약</text>
+    <text x="1245" y="332" class="small">schema version · correlation ID · heartbeat · ACK</text>
+  </g>
+
+  <!-- Server: VLM -->
+  <g>
+    <rect x="1025" y="365" width="690" height="160" rx="18" fill="#E9F8F0" stroke="#179B63" stroke-width="2"/>
+    <rect x="1045" y="382" width="86" height="25" rx="12" fill="#179B63"/>
+    <text x="1061" y="400" class="tag" fill="#FFFFFF">구현 완료</text>
+    <text x="1045" y="440" class="boxTitle">VLM 추론</text>
+    <text x="1045" y="470" class="body">Cosmos-Reason2-2B + QLoRA · 최대 3회 반복 정제</text>
+    <text x="1045" y="496" class="small">출혈 / 골절 / 의식 불명 / 정상 → 구호물품 및 조치법</text>
+  </g>
+
+  <!-- Server: VLM improvements -->
+  <g>
+    <rect x="1025" y="545" width="690" height="110" rx="18" fill="#FFF4D6" stroke="#D69A00" stroke-width="2"/>
+    <rect x="1045" y="562" width="86" height="25" rx="12" fill="#D69A00"/>
+    <text x="1061" y="580" class="tag" fill="#FFFFFF">수정·개선</text>
+    <text x="1045" y="619" class="boxTitle">판정·재개 정책</text>
+    <text x="1245" y="616" class="body">AI 추정 표시 · 운영자 확인 · 안전한 ACK 후 재개</text>
+    <text x="1245" y="641" class="small">5초 자동 재개와 15초 cooldown 정책 재설계</text>
+  </g>
+
+  <!-- Server: storage -->
+  <g>
+    <rect x="1025" y="675" width="330" height="150" rx="18" fill="#FFF4D6" stroke="#D69A00" stroke-width="2"/>
+    <rect x="1045" y="692" width="86" height="25" rx="12" fill="#D69A00"/>
+    <text x="1061" y="710" class="tag" fill="#FFFFFF">수정·확장</text>
+    <text x="1045" y="750" class="boxTitle">현재 SQLite</text>
+    <text x="1045" y="778" class="body">master_manual · rescue_logs</text>
+    <text x="1045" y="804" class="small">시작 시 로그 삭제 제거 필요</text>
+  </g>
+  <g>
+    <rect x="1375" y="675" width="340" height="150" rx="18" fill="#EAF3FF" stroke="#2F6FED" stroke-width="2"/>
+    <rect x="1395" y="692" width="86" height="25" rx="12" fill="#2F6FED"/>
+    <text x="1411" y="710" class="tag" fill="#FFFFFF">신규 구현</text>
+    <text x="1395" y="750" class="boxTitle">임무 중심 영속 저장</text>
+    <text x="1395" y="778" class="body">missions · victims · routes</text>
+    <text x="1395" y="804" class="small">maps · images · assessments · supplies</text>
+  </g>
+
+  <!-- Server: GUI -->
+  <g>
+    <rect x="1025" y="845" width="690" height="140" rx="18" fill="#EAF3FF" stroke="#2F6FED" stroke-width="2"/>
+    <rect x="1045" y="862" width="86" height="25" rx="12" fill="#2F6FED"/>
+    <text x="1061" y="880" class="tag" fill="#FFFFFF">신규 구현</text>
+    <text x="1045" y="920" class="boxTitle">사람 선택형 구조 GUI</text>
+    <text x="1045" y="949" class="body">[사람 1] [사람 2] → 이미지 · 부상 · 물품 · 발견 위치 · 안전 경로</text>
+    <text x="1045" y="974" class="small">운영자 확인/수정 · 구조 우선순위 · 물품 전달 · 구조 완료</text>
+  </g>
+
+  <!-- Network spine and arrows -->
+  <g>
+    <rect x="835" y="238" width="130" height="747" rx="40" fill="#E7EDF3" stroke="#C2CFDB" stroke-width="2"/>
+    <text x="900" y="285" class="flow" text-anchor="middle">네트워크</text>
+    <text x="900" y="309" class="small" text-anchor="middle">ROS 2</text>
+    <text x="900" y="331" class="small" text-anchor="middle">HTTPS</text>
+    <text x="900" y="353" class="small" text-anchor="middle">WebSocket</text>
+    <line x1="900" y1="382" x2="900" y2="927" stroke="#B4C2CF" stroke-width="3" stroke-dasharray="8 8"/>
+  </g>
+
+  <path d="M775 425 C835 425 965 425 1025 425" fill="none" stroke="#35516C" stroke-width="3" marker-end="url(#arrowDark)"/>
+  <text x="900" y="411" class="flow" text-anchor="middle">이미지 + YOLO 게이트</text>
+
+  <path d="M1025 590 C965 590 835 590 775 590" fill="none" stroke="#D69A00" stroke-width="3" marker-end="url(#arrowDark)"/>
+  <text x="900" y="575" class="flow" text-anchor="middle">VLM 결과 / 정지 해제</text>
+
+  <path d="M775 900 C835 900 965 900 1025 900" fill="none" stroke="#2F6FED" stroke-width="4" marker-end="url(#arrowBlue)"/>
+  <text x="900" y="885" class="flow" text-anchor="middle">부상자 이벤트 패키지</text>
+
+  <path d="M1025 950 C965 950 835 950 775 950" fill="none" stroke="#2F6FED" stroke-width="3" stroke-dasharray="8 6" marker-end="url(#arrowBlue)"/>
+  <text x="900" y="976" class="flow" text-anchor="middle">저장 ACK / 제한된 임무 명령</text>
+
+  <!-- Safety callout -->
+  <g filter="url(#shadow)">
+    <rect x="70" y="1055" width="1660" height="100" rx="22" fill="#FFFFFF" stroke="#C9D5E0"/>
+  </g>
+  <circle cx="112" cy="1105" r="25" fill="#D94040"/>
+  <text x="112" y="1113" text-anchor="middle" font-family="Noto Sans CJK KR, Noto Sans KR, Malgun Gothic, sans-serif" font-size="26" font-weight="700" fill="#FFFFFF">!</text>
+  <text x="155" y="1092" class="footerTitle">안전 경계</text>
+  <text x="155" y="1120" class="footerText">사람 감지 정지는 젯슨에서 즉시 완결한다. 서버는 원시 모터 명령을 보내지 않으며, 재개 요청도 젯슨의 안전 검사를 통과해야 한다.</text>
+  <text x="155" y="1143" class="footerText">우선순위: P0 데이터 삭제 제거·재개 정책 → P1 ID/좌표/경로/지도 통신 → P2 사람 선택형 DB·GUI</text>
+</svg>

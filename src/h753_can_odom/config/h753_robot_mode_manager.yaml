@@ -7,8 +7,17 @@ h753_robot_mode_manager:
     mode_request_topic: /robot_mode/request
     mode_topic: /robot_mode
     frontier_enabled_topic: /frontier_explorer/enabled
-    # Saved slam_toolbox posegraph base path. Modes 3/4 localize against it;
-    # mode 6 loads it as a baseline and continues mapping. Mode 2 ignores it.
+    # Mode 3/4 use the imported Go2 occupancy map through map_server + AMCL.
+    # Set localization_backend to slam_toolbox to roll back to posegraph
+    # localization without changing the mapping modes.
+    localization_backend: amcl
+    static_map_yaml: /home/jyl1015/ros2_graduation_project_ws/maps/go2/go2_map.yaml
+    # Empty selects the package-installed h753_go2_amcl.yaml.
+    amcl_params: ""
+    amcl_pose_topic: /amcl_pose
+    initial_pose_topic: /initialpose
+    # Saved slam_toolbox posegraph remains the Mode 6 continuation baseline.
+    # Mode 1/2 mapping and Mode 6 are intentionally unchanged by AMCL rollout.
     posegraph_file: /home/jyl1015/ros2_graduation_project_ws/maps/h753_map
     runtime_log_directory: /home/jyl1015/.ros/log/h753_robot_modes
     # Child components launched for the selected robot mode.
@@ -54,15 +63,21 @@ h753_robot_mode_manager:
     publish_period_s: 0.05
     # Normalized joystick stick deadzone [0.0, 1.0].
     deadzone: 0.15
-    # One physical speed envelope for every drive-capable mode (1 through 6).
-    # It matches legacy UART teleop and clears tracked-base motor stiction.
+    # Normal physical envelope for localization/navigation/inspection modes.
     # The UART bridge repeats these bounds and limits each track to 0.60 m/s.
     drive_max_linear_mps: 0.60
     drive_max_angular_radps: 2.67
-    # Physical track-center gauge [m], used to shape joystick turns.
-    track_gauge_m: 0.50
-    # Inside-track / outside-track speed ratio during moving turns.
-    moving_inner_ratio: 0.40
+    # Mapping modes 1/2/6 use the normal drive envelope. The previous
+    # 0.25 m/s, 0.35 rad/s mapping cap was too weak for the loaded robot.
+    # The UART bridge enforces the field-verified 50% per-track breakaway floor.
+    mapping_max_linear_mps: 0.60
+    mapping_max_angular_radps: 2.67
+    # Match the STM inverse-kinematics track gauge when shaping joystick turns.
+    track_gauge_m: 0.45
+    # Loaded open-loop compensation: full steer=75:100 and half steer~=88:100.
+    # A field run showed that a 50:100 PWM command still produced about a
+    # 1:3.5 encoder-speed ratio, so the inside track needs more feedforward.
+    moving_inner_ratio: 0.75
     # Linux Joy message axis indices for the connected Xbox controller.
     left_stick_y_axis: 1
     right_stick_x_axis: 3

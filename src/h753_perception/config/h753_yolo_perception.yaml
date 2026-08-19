@@ -3,11 +3,17 @@ h753_yolo_perception:
     # Existing yolo_project weights. The 22 MB person model finds targets;
     # the 6 MB model preserves the team's separate blue-clothing detector.
     person_model_path: /home/jyl1015/yolo_project/yolov8s.pt
-    blue_model_path: /home/jyl1015/yolo_project/yolov8s.pt
+    blue_model_path: /home/jyl1015/yolo_project/yolov8n.pt
     person_confidence: 0.40
     blue_person_confidence: 0.50
-    # Limit GPU/CPU load and always process the latest frame, never a backlog.
+    # Detection remains bounded so perception cannot starve drive callbacks.
     inference_rate_hz: 5.0
+    # Stream the latest annotated result independently at the same 15 Hz as
+    # the RealSense source. Repeated frames between inferences are intentional.
+    output_rate_hz: 15.0
+    # Assert people immediately, but require two seconds of continuous raw
+    # absence before publishing a clear edge. This filters same-person flicker.
+    detection_clear_hold_s: 2.0
 
     # RealSense aligned RGB-D topics from h753_can_odom/sensors_bringup.
     color_topic: /camera/camera/color/image_raw
@@ -16,6 +22,9 @@ h753_yolo_perception:
     # Center 20% median ROI, with the D435i's millimetre-to-metre scale.
     depth_roi_fraction: 0.20
     depth_scale_m: 0.001
+    # Only people whose measured depth is within this range count as
+    # "found"/target candidates. <= 0 disables the range limit.
+    max_person_distance_m: 3.5
 
     # person_blue.py HSV/torso settings, unchanged.
     blue_h_min: 100

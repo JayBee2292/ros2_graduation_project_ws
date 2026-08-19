@@ -7,6 +7,7 @@ from launch.actions import (
     ExecuteProcess,
     GroupAction,
     IncludeLaunchDescription,
+    TimerAction,
 )
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
@@ -37,6 +38,9 @@ def generate_launch_description():
     launch_rviz = LaunchConfiguration('launch_rviz')
     posegraph_file = LaunchConfiguration('posegraph_file')
     localization_params = LaunchConfiguration('localization_params')
+    localization_backend = LaunchConfiguration('localization_backend')
+    static_map_yaml = LaunchConfiguration('static_map_yaml')
+    amcl_params = LaunchConfiguration('amcl_params')
     nav2_params = LaunchConfiguration('nav2_params')
     collision_monitor_params = LaunchConfiguration('collision_monitor_params')
     uart_bridge_params = LaunchConfiguration('uart_bridge_params')
@@ -44,6 +48,10 @@ def generate_launch_description():
     uart_port = LaunchConfiguration('uart_port')
     rviz_config = LaunchConfiguration('rviz_config')
     nav2_bond_timeout = LaunchConfiguration('nav2_bond_timeout')
+    nav_to_pose_bt_xml = LaunchConfiguration('nav_to_pose_bt_xml')
+    collision_monitor_start_delay_s = LaunchConfiguration(
+        'collision_monitor_start_delay_s'
+    )
 
     return LaunchDescription([
         DeclareLaunchArgument('launch_lidar', default_value='true'),
@@ -83,6 +91,14 @@ def generate_launch_description():
             description='Lifecycle heartbeat timeout for a loaded Jetson.',
         ),
         DeclareLaunchArgument(
+            'collision_monitor_start_delay_s',
+            default_value='1.5',
+            description=(
+                'Delay the collision lifecycle manager until its node services '
+                'are ready.'
+            ),
+        ),
+        DeclareLaunchArgument(
             'posegraph_file',
             default_value='/home/jyl1015/ros2_graduation_project_ws/maps/h753_map',
             description='Serialized slam_toolbox posegraph base path without extension.',
@@ -92,8 +108,33 @@ def generate_launch_description():
             default_value=str(h753_share / 'config' / 'h753_slam_toolbox_localization.yaml'),
         ),
         DeclareLaunchArgument(
+            'localization_backend',
+            default_value='slam_toolbox',
+            choices=['slam_toolbox', 'amcl'],
+        ),
+        DeclareLaunchArgument(
+            'static_map_yaml',
+            default_value=(
+                '/home/jyl1015/ros2_graduation_project_ws/'
+                'maps/go2/go2_map.yaml'
+            ),
+        ),
+        DeclareLaunchArgument(
+            'amcl_params',
+            default_value=str(h753_share / 'config' / 'h753_go2_amcl.yaml'),
+        ),
+        DeclareLaunchArgument(
             'nav2_params',
             default_value=str(h753_share / 'config' / 'h753_nav2.yaml'),
+        ),
+        DeclareLaunchArgument(
+            'nav_to_pose_bt_xml',
+            default_value=str(
+                h753_share
+                / 'behavior_trees'
+                / 'navigate_to_pose_w_replanning_0_5hz.xml'
+            ),
+            description='NavigateToPose BT with reduced global replanning load.',
         ),
         DeclareLaunchArgument(
             'collision_monitor_params',
@@ -134,28 +175,52 @@ def generate_launch_description():
                         'launch_rviz': 'false',
                         'localization_params': localization_params,
                         'posegraph_file': posegraph_file,
+                        'localization_backend': localization_backend,
+                        'static_map_yaml': static_map_yaml,
+                        'amcl_params': amcl_params,
                     }.items(),
                 ),
             ],
         ),
-        GroupAction(
-            scoped=True,
+        TimerAction(
+            # AMCL/map_server lifecycle activation is deliberately sequenced
+            # before Nav2, matching the field-verified Go2 launch path.
+            period=5.0,
             actions=[
-                SetParameter(
-                    name='bond_timeout',
-                    value=ParameterValue(nav2_bond_timeout, value_type=float),
-                ),
-                IncludeLaunchDescription(
-                    PythonLaunchDescriptionSource(
-                        str(nav2_share / 'launch' / 'navigation_launch.py')
-                    ),
-                    launch_arguments={
-                        'use_sim_time': 'false',
-                        'autostart': 'true',
-                        'params_file': nav2_params,
-                        'use_composition': 'False',
-                        'use_respawn': 'False',
-                    }.items(),
+                GroupAction(
+                    scoped=True,
+                    actions=[
+                        SetParameter(
+                            name='bond_timeout',
+                            value=ParameterValue(
+                                nav2_bond_timeout,
+                                value_type=float,
+                            ),
+                        ),
+                        SetParameter(
+                            name='default_nav_to_pose_bt_xml',
+                            value=ParameterValue(
+                                nav_to_pose_bt_xml,
+                                value_type=str,
+                            ),
+                        ),
+                        IncludeLaunchDescription(
+                            PythonLaunchDescriptionSource(
+                                str(
+                                    nav2_share
+                                    / 'launch'
+                                    / 'navigation_launch.py'
+                                )
+                            ),
+                            launch_arguments={
+                                'use_sim_time': 'false',
+                                'autostart': 'true',
+                                'params_file': nav2_params,
+                                'use_composition': 'False',
+                                'use_respawn': 'False',
+                            }.items(),
+                        ),
+                    ],
                 ),
             ],
         ),
@@ -166,16 +231,24 @@ def generate_launch_description():
             output='screen',
             parameters=[collision_monitor_params],
         ),
-        Node(
-            package='nav2_lifecycle_manager',
-            executable='lifecycle_manager',
-            name='lifecycle_manager_collision_monitor',
-            output='screen',
-            parameters=[{
-                'use_sim_time': False,
-                'autostart': True,
-                'node_names': ['collision_monitor'],
-            }],
+        TimerAction(
+            # Starting both processes simultaneously occasionally made the
+            # configure response miss its client on a loaded Jetson, leaving
+            # collision_monitor inactive and /cmd_vel_safe silent.
+            period=collision_monitor_start_delay_s,
+            actions=[
+                Node(
+                    package='nav2_lifecycle_manager',
+                    executable='lifecycle_manager',
+                    name='lifecycle_manager_collision_monitor',
+                    output='screen',
+                    parameters=[{
+                        'use_sim_time': False,
+                        'autostart': True,
+                        'node_names': ['collision_monitor'],
+                    }],
+                ),
+            ],
         ),
         Node(
             package='h753_can_odom',

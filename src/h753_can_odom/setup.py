@@ -13,6 +13,10 @@ setup(
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
+        (
+            os.path.join('share', package_name, 'behavior_trees'),
+            glob('behavior_trees/*.xml'),
+        ),
         (os.path.join('share', package_name, 'config'), glob('config/*.yaml')),
         (os.path.join('share', package_name, 'rviz'), glob('rviz/*.rviz')),
     ],
@@ -33,6 +37,7 @@ setup(
             'map_odom_publisher_node = h753_can_odom.map_odom_publisher_node:main',
             'cmd_vel_uart_bridge_node = h753_can_odom.cmd_vel_uart_bridge_node:main',
             'frontier_explorer_node = h753_can_odom.frontier_explorer_node:main',
+            'go2_manual_drive_node = h753_can_odom.go2_manual_drive_node:main',
             'robot_mode_manager_node = h753_can_odom.robot_mode_manager_node:main',
             'vlm_gateway_node = h753_can_odom.vlm_gateway_node:main',
         ],

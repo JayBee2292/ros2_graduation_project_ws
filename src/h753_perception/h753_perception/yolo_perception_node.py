@@ -4,13 +4,16 @@ import json
 import math
 import os
 from pathlib import Path
+import threading
 import time
 
 import cv2
 from cv_bridge import CvBridge
 import numpy as np
 import rclpy
+from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.executors import ExternalShutdownException
+from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import CompressedImage, Image
@@ -21,6 +24,7 @@ from ultralytics import YOLO
 from h753_perception.perception_core import (
     blue_clothing_ratio,
     clip_box,
+    DetectionClearHold,
     median_depth_m,
 )
 
@@ -47,6 +51,8 @@ class YoloPerceptionNode(Node):
         self.declare_parameter("person_confidence", 0.40)
         self.declare_parameter("blue_person_confidence", 0.50)
         self.declare_parameter("inference_rate_hz", 5.0)
+        self.declare_parameter("output_rate_hz", 15.0)
+        self.declare_parameter("detection_clear_hold_s", 2.0)
 
         # This workspace's single RealSense driver owns aligned RGB-D input.
         self.declare_parameter("color_topic", "/camera/camera/color/image_raw")
@@ -57,6 +63,9 @@ class YoloPerceptionNode(Node):
         self.declare_parameter("max_depth_age_s", 0.25)
         self.declare_parameter("depth_roi_fraction", 0.20)
         self.declare_parameter("depth_scale_m", 0.001)
+        # Only people within this range count as "found"; <= 0 disables the
+        # limit (still requires a valid depth sample).
+        self.declare_parameter("max_person_distance_m", 3.5)
 
         # HSV and torso parameters are copied from person_blue.py.
         self.declare_parameter("blue_h_min", 100)
@@ -87,6 +96,12 @@ class YoloPerceptionNode(Node):
             self.get_parameter("depth_roi_fraction").value
         )
         self.depth_scale_m = float(self.get_parameter("depth_scale_m").value)
+        self.max_person_distance_m = float(
+            self.get_parameter("max_person_distance_m").value
+        )
+        self.detection_clear_hold_s = float(
+            self.get_parameter("detection_clear_hold_s").value
+        )
         self.blue_h_min = int(self.get_parameter("blue_h_min").value)
         self.blue_h_max = int(self.get_parameter("blue_h_max").value)
         self.blue_s_min = int(self.get_parameter("blue_s_min").value)
@@ -130,6 +145,7 @@ class YoloPerceptionNode(Node):
         self.get_logger().info(f"YOLO models ready on {self.device}")
 
         self.bridge = CvBridge()
+        self.data_lock = threading.Lock()
         self.latest_color: np.ndarray | None = None
         self.latest_color_msg: Image | None = None
         self.latest_color_stamp = -1.0
@@ -138,6 +154,28 @@ class YoloPerceptionNode(Node):
         self.processed_color_stamp = -1.0
         self.last_error_log_at = 0.0
         self.frame_count = 0
+        # Assert detections immediately, but require continuous absence before
+        # publishing zero. This prevents one weak inference frame from making
+        # a false 1->0->1 edge for the same person.
+        self.person_detection_hold = DetectionClearHold(
+            self.detection_clear_hold_s
+        )
+        self.blue_detection_hold = DetectionClearHold(
+            self.detection_clear_hold_s
+        )
+        self.last_published_person_found: bool | None = None
+        self.last_published_blue_person_found: bool | None = None
+        self.latest_compressed_result: CompressedImage | None = None
+        self.latest_raw_result: Image | None = None
+        self.latest_window_result: np.ndarray | None = None
+        self.latest_window_mask: np.ndarray | None = None
+        self.window_hsv_parameters = (
+            self.blue_h_min,
+            self.blue_h_max,
+            self.blue_s_min,
+            self.blue_v_min,
+            self.blue_ratio_threshold,
+        )
 
         self.person_found_pub = self.create_publisher(
             Int32, "/yolo/person_found", 10
@@ -163,17 +201,22 @@ class YoloPerceptionNode(Node):
 
         color_topic = str(self.get_parameter("color_topic").value)
         depth_topic = str(self.get_parameter("depth_topic").value)
+        self.sensor_callback_group = MutuallyExclusiveCallbackGroup()
+        self.inference_callback_group = MutuallyExclusiveCallbackGroup()
+        self.output_callback_group = MutuallyExclusiveCallbackGroup()
         self.color_sub = self.create_subscription(
             Image,
             color_topic,
             self._color_callback,
             qos_profile_sensor_data,
+            callback_group=self.sensor_callback_group,
         )
         self.depth_sub = self.create_subscription(
             Image,
             depth_topic,
             self._depth_callback,
             qos_profile_sensor_data,
+            callback_group=self.sensor_callback_group,
         )
 
         self._configure_tuning_windows()
@@ -182,10 +225,23 @@ class YoloPerceptionNode(Node):
             float(self.get_parameter("inference_rate_hz").value),
         )
         self.timer = self.create_timer(
-            1.0 / inference_rate_hz, self._process_latest
+            1.0 / inference_rate_hz,
+            self._process_latest,
+            callback_group=self.inference_callback_group,
+        )
+        output_rate_hz = max(
+            1.0,
+            float(self.get_parameter("output_rate_hz").value),
+        )
+        self.output_timer = self.create_timer(
+            1.0 / output_rate_hz,
+            self._publish_cached_images,
+            callback_group=self.output_callback_group,
         )
         self.get_logger().info(
-            f"Listening for aligned RGB-D at {inference_rate_hz:.1f} Hz: "
+            f"Listening for aligned RGB-D: inference={inference_rate_hz:.1f} "
+            f"Hz, annotated output={output_rate_hz:.1f} Hz: "
+            f"clear_hold={self.detection_clear_hold_s:.1f}s: "
             f"{color_topic}, {depth_topic}"
         )
 
@@ -201,6 +257,11 @@ class YoloPerceptionNode(Node):
             self.tuning_mode = False
             return
         try:
+            if self.show_window:
+                cv2.namedWindow(
+                    "YOLO Person + Blue Filter",
+                    cv2.WINDOW_NORMAL,
+                )
             if self.tuning_mode:
                 cv2.namedWindow("HSV Tuner", cv2.WINDOW_NORMAL)
                 cv2.resizeWindow("HSV Tuner", 400, 200)
@@ -239,59 +300,71 @@ class YoloPerceptionNode(Node):
                 self.blue_v_min,
                 self.blue_ratio_threshold,
             )
-        return (
-            cv2.getTrackbarPos("H_min", "HSV Tuner"),
-            cv2.getTrackbarPos("H_max", "HSV Tuner"),
-            cv2.getTrackbarPos("S_min", "HSV Tuner"),
-            cv2.getTrackbarPos("V_min", "HSV Tuner"),
-            cv2.getTrackbarPos("Ratio%", "HSV Tuner") / 100.0,
-        )
+        with self.data_lock:
+            return self.window_hsv_parameters
 
     def _color_callback(self, msg: Image) -> None:
         try:
-            self.latest_color = self.bridge.imgmsg_to_cv2(
+            color = self.bridge.imgmsg_to_cv2(
                 msg,
                 desired_encoding="bgr8",
             )
-            self.latest_color_msg = msg
-            self.latest_color_stamp = stamp_seconds(msg)
+            with self.data_lock:
+                self.latest_color = color
+                self.latest_color_msg = msg
+                self.latest_color_stamp = stamp_seconds(msg)
         # cv_bridge exception types differ across ROS 2 releases.
         except Exception as exc:
             self._log_processing_error("color conversion", exc)
 
     def _depth_callback(self, msg: Image) -> None:
         try:
-            self.latest_depth = self.bridge.imgmsg_to_cv2(
+            depth = self.bridge.imgmsg_to_cv2(
                 msg,
                 desired_encoding="passthrough",
             )
-            self.latest_depth_stamp = stamp_seconds(msg)
+            with self.data_lock:
+                self.latest_depth = depth
+                self.latest_depth_stamp = stamp_seconds(msg)
         except Exception as exc:
             self._log_processing_error("depth conversion", exc)
 
-    def _depth_for_color(self) -> tuple[np.ndarray | None, bool]:
-        if self.latest_depth is None:
+    def _depth_for_color(
+        self,
+        color_stamp: float,
+        depth_image: np.ndarray | None,
+        depth_stamp: float,
+    ) -> tuple[np.ndarray | None, bool]:
+        if depth_image is None:
             return None, False
-        age = abs(self.latest_color_stamp - self.latest_depth_stamp)
+        age = abs(color_stamp - depth_stamp)
         if age > self.max_depth_age_s:
             return None, False
-        return self.latest_depth, True
+        return depth_image, True
 
     def _process_latest(self) -> None:
-        if self.latest_color is None or self.latest_color_msg is None:
-            return
-        if self.latest_color_stamp == self.processed_color_stamp:
-            return
+        with self.data_lock:
+            if self.latest_color is None or self.latest_color_msg is None:
+                return
+            if self.latest_color_stamp == self.processed_color_stamp:
+                return
+            frame = self.latest_color.copy()
+            source_msg = self.latest_color_msg
+            color_stamp = self.latest_color_stamp
+            depth_snapshot = self.latest_depth
+            depth_stamp = self.latest_depth_stamp
+            self.processed_color_stamp = color_stamp
 
         # Pseudocode:
         #   consume only the newest RGB frame (no inference backlog)
         #   detect all people and estimate center-ROI median depth
         #   run the legacy blue-clothing classifier on the same frame
         #   publish one coherent set of flags, status, distance, and overlay
-        frame = self.latest_color.copy()
-        source_msg = self.latest_color_msg
-        self.processed_color_stamp = self.latest_color_stamp
-        depth_image, depth_fresh = self._depth_for_color()
+        depth_image, depth_fresh = self._depth_for_color(
+            color_stamp,
+            depth_snapshot,
+            depth_stamp,
+        )
         started_at = time.monotonic()
 
         try:
@@ -320,28 +393,44 @@ class YoloPerceptionNode(Node):
                         frame.shape[0],
                     )
                     confidence = float(box.conf[0].detach().cpu().item())
-                    person_count += 1
                     x1, y1, x2, y2 = coords
-                    cv2.rectangle(
-                        annotated, (x1, y1), (x2, y2), (0, 255, 0), 2
-                    )
-                    cv2.putText(
-                        annotated,
-                        f"person {confidence:.2f}",
-                        (x1, max(y1 - 8, 15)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.55,
-                        (0, 255, 0),
-                        2,
-                    )
                     distance = median_depth_m(
                         depth_image,
                         coords,
                         self.depth_roi_fraction,
                         self.depth_scale_m,
                     )
-                    if distance is not None:
+                    # A person only counts as "found" once their depth is
+                    # known and within max_person_distance_m (<= 0 disables
+                    # the range limit but still requires a depth sample).
+                    in_range = distance is not None and (
+                        self.max_person_distance_m <= 0.0
+                        or distance <= self.max_person_distance_m
+                    )
+                    if in_range:
+                        person_count += 1
                         people_with_depth.append((distance, coords))
+                        box_color = (0, 255, 0)
+                        label = f"person {confidence:.2f} {distance:.2f}m"
+                    else:
+                        box_color = (110, 110, 110)
+                        distance_text = (
+                            f"{distance:.2f}m" if distance is not None
+                            else "no depth"
+                        )
+                        label = f"person {confidence:.2f} ({distance_text})"
+                    cv2.rectangle(
+                        annotated, (x1, y1), (x2, y2), box_color, 2
+                    )
+                    cv2.putText(
+                        annotated,
+                        label,
+                        (x1, max(y1 - 8, 15)),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.55,
+                        box_color,
+                        2,
+                    )
 
             nearest_distance = math.nan
             if people_with_depth:
@@ -391,12 +480,35 @@ class YoloPerceptionNode(Node):
                     if first_mask is None and mask is not None:
                         first_mask = mask
                     is_blue = ratio >= blue_threshold
-                    if is_blue:
+                    distance = median_depth_m(
+                        depth_image,
+                        coords,
+                        self.depth_roi_fraction,
+                        self.depth_scale_m,
+                    )
+                    # Same distance gate as person detection: blue clothing
+                    # only counts as "found" within max_person_distance_m.
+                    in_range = distance is not None and (
+                        self.max_person_distance_m <= 0.0
+                        or distance <= self.max_person_distance_m
+                    )
+                    if is_blue and in_range:
                         blue_person_found = True
                         blue_person_count += 1
                         color = (255, 100, 0)
-                        label = f"BLUE {ratio * 100:.0f}% ({confidence:.2f})"
+                        label = f"BLUE {ratio * 100:.0f}% {distance:.2f}m"
                         thickness = 3
+                    elif is_blue:
+                        color = (110, 110, 110)
+                        distance_text = (
+                            f"{distance:.2f}m" if distance is not None
+                            else "no depth"
+                        )
+                        label = (
+                            f"BLUE {ratio * 100:.0f}% "
+                            f"({distance_text}, out of range)"
+                        )
+                        thickness = 1
                     else:
                         color = (128, 128, 128)
                         label = f"person {ratio * 100:.0f}% ({confidence:.2f})"
@@ -424,7 +536,17 @@ class YoloPerceptionNode(Node):
                             1,
                         )
 
-            person_found = person_count > 0
+            raw_person_found = person_count > 0
+            raw_blue_person_found = blue_person_found
+            detection_time = time.monotonic()
+            person_found = self.person_detection_hold.update(
+                raw_person_found,
+                detection_time,
+            )
+            blue_person_found = self.blue_detection_hold.update(
+                raw_blue_person_found,
+                detection_time,
+            )
             status_text = "PERSON FOUND!" if person_found else "searching..."
             status_color = (0, 255, 0) if person_found else (180, 180, 180)
             cv2.putText(
@@ -452,16 +574,24 @@ class YoloPerceptionNode(Node):
                 )
 
             inference_ms = (time.monotonic() - started_at) * 1000.0
-            self.person_found_pub.publish(Int32(data=int(person_found)))
-            self.blue_person_pub.publish(Int32(data=int(blue_person_found)))
+            if person_found != self.last_published_person_found:
+                self.person_found_pub.publish(Int32(data=int(person_found)))
+                self.last_published_person_found = person_found
+            if blue_person_found != self.last_published_blue_person_found:
+                self.blue_person_pub.publish(
+                    Int32(data=int(blue_person_found))
+                )
+                self.last_published_blue_person_found = blue_person_found
             self.distance_pub.publish(Float32(data=float(nearest_distance)))
             self.status_pub.publish(
                 String(
                     data=json.dumps(
                         {
                             "person_found": person_found,
+                            "raw_person_found": raw_person_found,
                             "person_count": person_count,
                             "blue_person_found": blue_person_found,
+                            "raw_blue_person_found": raw_blue_person_found,
                             "blue_person_count": blue_person_count,
                             "nearest_distance_m": (
                                 None
@@ -502,10 +632,29 @@ class YoloPerceptionNode(Node):
             compressed.header = source_msg.header
             compressed.format = "jpeg"
             compressed.data = jpeg.tobytes()
-            self.compressed_image_pub.publish(compressed)
+            with self.data_lock:
+                self.latest_compressed_result = compressed
         if self.publish_raw_result_image:
             raw = self.bridge.cv2_to_imgmsg(annotated, encoding="bgr8")
             raw.header = source_msg.header
+            with self.data_lock:
+                self.latest_raw_result = raw
+
+    def _publish_cached_images(self) -> None:
+        if (
+            self.compressed_image_pub.get_subscription_count() == 0
+            and self.raw_image_pub.get_subscription_count() == 0
+        ):
+            return
+        with self.data_lock:
+            compressed = self.latest_compressed_result
+            raw = self.latest_raw_result
+        if (
+            compressed is not None
+            and self.compressed_image_pub.get_subscription_count() > 0
+        ):
+            self.compressed_image_pub.publish(compressed)
+        if raw is not None and self.raw_image_pub.get_subscription_count() > 0:
             self.raw_image_pub.publish(raw)
 
     def _show_images(
@@ -513,10 +662,43 @@ class YoloPerceptionNode(Node):
     ) -> None:
         if not self.show_window:
             return
-        cv2.imshow("YOLO Person + Blue Filter", annotated)
-        if self.tuning_mode and mask is not None:
-            cv2.imshow("Blue Mask (torso)", mask)
-        cv2.waitKey(1)
+        # Inference runs in a MultiThreadedExecutor worker. HighGUI must remain
+        # on the process main thread, so only exchange the newest display frame
+        # here; main() calls _pump_windows() to perform all GUI operations.
+        with self.data_lock:
+            self.latest_window_result = annotated
+            self.latest_window_mask = mask
+
+    def _pump_windows(self) -> None:
+        """Process Mode 5 OpenCV windows from the process main thread."""
+        if not self.show_window:
+            return
+        try:
+            if self.tuning_mode:
+                hsv_parameters = (
+                    cv2.getTrackbarPos("H_min", "HSV Tuner"),
+                    cv2.getTrackbarPos("H_max", "HSV Tuner"),
+                    cv2.getTrackbarPos("S_min", "HSV Tuner"),
+                    cv2.getTrackbarPos("V_min", "HSV Tuner"),
+                    cv2.getTrackbarPos("Ratio%", "HSV Tuner") / 100.0,
+                )
+                with self.data_lock:
+                    self.window_hsv_parameters = hsv_parameters
+
+            with self.data_lock:
+                annotated = self.latest_window_result
+                mask = self.latest_window_mask
+            if annotated is not None:
+                cv2.imshow("YOLO Person + Blue Filter", annotated)
+            if self.tuning_mode and mask is not None:
+                cv2.imshow("Blue Mask (torso)", mask)
+            cv2.waitKey(1)
+        except cv2.error as exc:
+            self.get_logger().warn(
+                f"OpenCV preview disabled after GUI error: {exc}"
+            )
+            self.show_window = False
+            self.tuning_mode = False
 
     def _log_processing_error(self, stage: str, exc: Exception) -> None:
         now = time.monotonic()
@@ -533,12 +715,19 @@ class YoloPerceptionNode(Node):
 def main(args=None) -> None:
     rclpy.init(args=args)
     node = None
+    executor = None
     try:
         node = YoloPerceptionNode()
-        rclpy.spin(node)
+        executor = MultiThreadedExecutor(num_threads=3)
+        executor.add_node(node)
+        while rclpy.ok():
+            executor.spin_once(timeout_sec=0.02)
+            node._pump_windows()
     except (KeyboardInterrupt, ExternalShutdownException):
         pass
     finally:
+        if executor is not None:
+            executor.shutdown()
         if node is not None:
             node.destroy_node()
         if rclpy.ok():

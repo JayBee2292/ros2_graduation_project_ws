@@ -3,11 +3,16 @@ from pathlib import Path
 import yaml
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.actions import (
+    DeclareLaunchArgument,
+    IncludeLaunchDescription,
+    TimerAction,
+)
 from launch.conditions import IfCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
-from launch.substitutions import LaunchConfiguration
+from launch.substitutions import LaunchConfiguration, PythonExpression
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def load_params(path: Path, node_name: str) -> dict:
@@ -41,6 +46,9 @@ def generate_launch_description():
     imu_odom_params = LaunchConfiguration('imu_odom_params')
     localization_params = LaunchConfiguration('localization_params')
     posegraph_file = LaunchConfiguration('posegraph_file')
+    localization_backend = LaunchConfiguration('localization_backend')
+    static_map_yaml = LaunchConfiguration('static_map_yaml')
+    amcl_params = LaunchConfiguration('amcl_params')
     rviz_config = LaunchConfiguration('rviz_config')
     base_frame = LaunchConfiguration('base_frame')
     laser_frame = LaunchConfiguration('laser_frame')
@@ -99,6 +107,24 @@ def generate_launch_description():
             'posegraph_file',
             default_value='/home/jyl1015/ros2_graduation_project_ws/maps/h753_map',
             description='Serialized slam_toolbox posegraph base path without extension.',
+        ),
+        DeclareLaunchArgument(
+            'localization_backend',
+            default_value='slam_toolbox',
+            choices=['slam_toolbox', 'amcl'],
+            description='Saved-map localization implementation.',
+        ),
+        DeclareLaunchArgument(
+            'static_map_yaml',
+            default_value=(
+                '/home/jyl1015/ros2_graduation_project_ws/'
+                'maps/go2/go2_map.yaml'
+            ),
+            description='Occupancy-map YAML loaded by map_server for AMCL.',
+        ),
+        DeclareLaunchArgument(
+            'amcl_params',
+            default_value=str(h753_share / 'config' / 'h753_go2_amcl.yaml'),
         ),
         DeclareLaunchArgument(
             'rviz_config',
@@ -160,6 +186,59 @@ def generate_launch_description():
             parameters=[
                 localization_params,
                 {'map_file_name': posegraph_file},
+            ],
+            condition=IfCondition(PythonExpression([
+                "'", localization_backend, "' == 'slam_toolbox'",
+            ])),
+        ),
+        Node(
+            package='nav2_map_server',
+            executable='map_server',
+            name='map_server',
+            output='screen',
+            parameters=[
+                amcl_params,
+                {
+                    'yaml_filename': ParameterValue(
+                        static_map_yaml,
+                        value_type=str,
+                    ),
+                },
+            ],
+            condition=IfCondition(PythonExpression([
+                "'", localization_backend, "' == 'amcl'",
+            ])),
+        ),
+        Node(
+            package='nav2_amcl',
+            executable='amcl',
+            name='amcl',
+            output='screen',
+            parameters=[amcl_params],
+            condition=IfCondition(PythonExpression([
+                "'", localization_backend, "' == 'amcl'",
+            ])),
+        ),
+        TimerAction(
+            # Sensors, map_server and AMCL are inside a scoped parent launch.
+            # A literal delay remains valid after that parent scope exits.
+            period=1.5,
+            condition=IfCondition(PythonExpression([
+                "'", localization_backend, "' == 'amcl'",
+            ])),
+            actions=[
+                Node(
+                    package='nav2_lifecycle_manager',
+                    executable='lifecycle_manager',
+                    name='lifecycle_manager_localization',
+                    output='screen',
+                    parameters=[{
+                        'use_sim_time': False,
+                        'autostart': True,
+                        'bond_timeout': 15.0,
+                        'node_names': ['map_server', 'amcl'],
+                    }],
+                ),
             ],
         ),
         Node(

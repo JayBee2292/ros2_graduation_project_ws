@@ -75,6 +75,89 @@ def limit_twist(
     return linear_mps, angular_radps
 
 
+def apply_track_stiction_floor(
+    linear_mps: float,
+    angular_radps: float,
+    track_gauge_m: float,
+    max_track_speed_mps: float,
+    min_track_pwm_percent: float,
+    track_zero_deadband_mps: float,
+    min_in_place_turn_pwm_percent: float | None = None,
+    in_place_turn_linear_threshold_mps: float = 0.0,
+) -> tuple[float, float]:
+    """Raise each moving track above the STM open-loop PWM dead zone.
+
+    The STM feedforward is linear: ``track_mps / max_track_speed_mps * 100``.
+    Applying the floor after converting body twist to left/right track speeds
+    also covers curved motion where only the inside track is below breakaway.
+    Both moving tracks are scaled together whenever possible so the requested
+    steering ratio is retained.
+    """
+    effective_min_pwm_percent = min_track_pwm_percent
+    if (
+        min_in_place_turn_pwm_percent is not None
+        and abs(linear_mps) <= in_place_turn_linear_threshold_mps
+        and angular_radps != 0.0
+    ):
+        effective_min_pwm_percent = max(
+            effective_min_pwm_percent,
+            min_in_place_turn_pwm_percent,
+        )
+
+    if effective_min_pwm_percent <= 0.0:
+        return linear_mps, angular_radps
+
+    half_gauge = track_gauge_m / 2.0
+    left_mps = linear_mps - angular_radps * half_gauge
+    right_mps = linear_mps + angular_radps * half_gauge
+    min_track_speed_mps = (
+        max_track_speed_mps * effective_min_pwm_percent / 100.0
+    )
+
+    if abs(left_mps) <= track_zero_deadband_mps:
+        left_mps = 0.0
+    if abs(right_mps) <= track_zero_deadband_mps:
+        right_mps = 0.0
+
+    moving_speeds = [
+        abs(track_mps)
+        for track_mps in (left_mps, right_mps)
+        if track_mps != 0.0
+    ]
+    if not moving_speeds:
+        return 0.0, 0.0
+
+    slowest_mps = min(moving_speeds)
+    if slowest_mps < min_track_speed_mps:
+        scale = min_track_speed_mps / slowest_mps
+        scaled_left_mps = left_mps * scale
+        scaled_right_mps = right_mps * scale
+        peak_scaled_mps = max(abs(scaled_left_mps), abs(scaled_right_mps))
+
+        if peak_scaled_mps <= max_track_speed_mps:
+            left_mps = scaled_left_mps
+            right_mps = scaled_right_mps
+        else:
+            # A ratio below min_pwm/100 cannot simultaneously retain its
+            # curvature and keep both tracks inside 0..100% PWM. Clamp to the
+            # nearest physically achievable track pair in that edge case.
+            def clamp_moving_track(track_mps: float) -> float:
+                if track_mps == 0.0:
+                    return 0.0
+                magnitude = clamp(
+                    abs(track_mps),
+                    min_track_speed_mps,
+                    max_track_speed_mps,
+                )
+                return math.copysign(magnitude, track_mps)
+
+            left_mps = clamp_moving_track(left_mps)
+            right_mps = clamp_moving_track(right_mps)
+    linear_mps = (left_mps + right_mps) / 2.0
+    angular_radps = (right_mps - left_mps) / track_gauge_m
+    return linear_mps, angular_radps
+
+
 def encode_twist_frame(linear_mps: float, angular_radps: float) -> bytes:
     linear_mmps = clamp_i16(int(round(linear_mps * 1000.0)))
     angular_mradps = clamp_i16(int(round(angular_radps * 1000.0)))
@@ -188,10 +271,14 @@ class CmdVelUartBridgeNode(Node):
         self.declare_parameter('max_angular_radps', 0.80)
         self.declare_parameter('linear_command_sign', 1.0)
         self.declare_parameter('angular_command_sign', 1.0)
-        self.declare_parameter('track_gauge_m', 0.50)
+        # Keep this equal to STM EFFECTIVE_TRACK_WIDTH_M. The bridge uses it
+        # both for track-speed limiting and for PWM breakaway compensation.
+        self.declare_parameter('track_gauge_m', 0.45)
         self.declare_parameter('max_track_speed_mps', 0.60)
-        self.declare_parameter('min_linear_mps', 0.0)
-        self.declare_parameter('min_angular_radps', 0.0)
+        self.declare_parameter('min_track_pwm_percent', 0.0)
+        self.declare_parameter('min_in_place_turn_pwm_percent', 0.0)
+        self.declare_parameter('in_place_turn_linear_threshold_mps', 0.02)
+        self.declare_parameter('track_zero_deadband_mps', 0.01)
 
         self.cmd_vel_topic = str(self.get_parameter('cmd_vel_topic').value)
         self.injury_stop_topic = str(self.get_parameter('injury_stop_topic').value)
@@ -211,11 +298,37 @@ class CmdVelUartBridgeNode(Node):
         )
         self.track_gauge_m = float(self.get_parameter('track_gauge_m').value)
         self.max_track_speed_mps = float(self.get_parameter('max_track_speed_mps').value)
-        self.min_linear_mps = float(self.get_parameter('min_linear_mps').value)
-        self.min_angular_radps = float(self.get_parameter('min_angular_radps').value)
+        self.min_track_pwm_percent = float(
+            self.get_parameter('min_track_pwm_percent').value
+        )
+        self.min_in_place_turn_pwm_percent = float(
+            self.get_parameter('min_in_place_turn_pwm_percent').value
+        )
+        self.in_place_turn_linear_threshold_mps = float(
+            self.get_parameter('in_place_turn_linear_threshold_mps').value
+        )
+        self.track_zero_deadband_mps = float(
+            self.get_parameter('track_zero_deadband_mps').value
+        )
 
+        if self.track_gauge_m <= 0.0:
+            raise ValueError('track_gauge_m must be positive')
         if self.max_track_speed_mps <= 0.0:
             raise ValueError('max_track_speed_mps must be positive')
+        if not 0.0 <= self.min_track_pwm_percent <= 100.0:
+            raise ValueError('min_track_pwm_percent must be between 0 and 100')
+        if not 0.0 <= self.min_in_place_turn_pwm_percent <= 100.0:
+            raise ValueError(
+                'min_in_place_turn_pwm_percent must be between 0 and 100'
+            )
+        if self.in_place_turn_linear_threshold_mps < 0.0:
+            raise ValueError(
+                'in_place_turn_linear_threshold_mps must be non-negative'
+            )
+        if not 0.0 <= self.track_zero_deadband_mps < self.max_track_speed_mps:
+            raise ValueError(
+                'track_zero_deadband_mps must be non-negative and below max track speed'
+            )
         if self.deadman_timeout_s <= 0.0:
             raise ValueError('deadman_timeout_s must be positive')
         if self.scan_timeout_s <= 0.0:
@@ -262,6 +375,9 @@ class CmdVelUartBridgeNode(Node):
             f'UART bridge ready: {self.cmd_vel_topic} -> STM CMD_TWIST, '
             f'limits=({self.max_linear_mps:.2f} m/s, {self.max_angular_radps:.2f} rad/s), '
             f'signs=({self.linear_command_sign:+.0f}, {self.angular_command_sign:+.0f}), '
+            f'PWM floor={self.min_track_pwm_percent:.1f}% '
+            f'({self.max_track_speed_mps * self.min_track_pwm_percent / 100.0:.3f} m/s/track), '
+            f'in-place turn floor={self.min_in_place_turn_pwm_percent:.1f}%, '
             f'scan_guard={self.require_scan}, injury_stop={self.injury_stop_topic}'
         )
 
@@ -371,11 +487,16 @@ class CmdVelUartBridgeNode(Node):
         self._send_active_command()
 
     def _apply_stiction_floor(self, linear_mps: float, angular_radps: float) -> tuple[float, float]:
-        if self.min_linear_mps > 0.0 and 0.0 < abs(linear_mps) < self.min_linear_mps:
-            linear_mps = math.copysign(self.min_linear_mps, linear_mps)
-        if self.min_angular_radps > 0.0 and 0.0 < abs(angular_radps) < self.min_angular_radps:
-            angular_radps = math.copysign(self.min_angular_radps, angular_radps)
-        return linear_mps, angular_radps
+        return apply_track_stiction_floor(
+            linear_mps,
+            angular_radps,
+            self.track_gauge_m,
+            self.max_track_speed_mps,
+            self.min_track_pwm_percent,
+            self.track_zero_deadband_mps,
+            self.min_in_place_turn_pwm_percent,
+            self.in_place_turn_linear_threshold_mps,
+        )
 
     def _send_active_command(self) -> None:
         if self.serial_port is None or not self.serial_port.is_open:

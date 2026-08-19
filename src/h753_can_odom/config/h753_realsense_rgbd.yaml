@@ -8,6 +8,13 @@
     enable_infra2: false
     rgb_camera.color_profile: 640x480x15
     depth_module.depth_profile: 640x480x15
+    # Prefer the newest 15 Hz frame instead of back-pressuring the RealSense
+    # publisher when YOLO/RViz/network consumers momentarily fall behind.
+    color_qos: SENSOR_DATA
+    depth_qos: SENSOR_DATA
+    rgb_camera.frames_queue_size: 2
+    depth_module.frames_queue_size: 2
+    align_depth.frames_queue_size: 2
     rgb_camera.power_line_frequency: 2
     enable_sync: true
     align_depth.enable: true

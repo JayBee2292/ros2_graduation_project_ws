@@ -1,0 +1,22 @@
+h753_go2_manual_drive:
+  ros__parameters:
+    joy_topic: /joy
+    cmd_vel_topic: /cmd_vel_selected
+    navigation_enabled: false
+    nav_cmd_vel_topic: /cmd_vel
+    publish_period_s: 0.05
+    joy_timeout_s: 0.50
+    nav_timeout_s: 0.50
+    deadzone: 0.15
+    # Match the actual drive/UART envelope. Full stick reaches 0.60 m/s track
+    # speed (=100% PWM); smaller non-zero commands retain the 50% breakaway floor.
+    max_linear_mps: 0.60
+    max_angular_radps: 2.67
+    track_gauge_m: 0.45
+    # Full moving steer commands inner:outer track speed = 75:100.
+    moving_inner_ratio: 0.75
+    left_stick_y_axis: 1
+    right_stick_x_axis: 3
+    deadman_button: 4
+    emergency_stop_button: 1
+    emergency_reset_button: 0

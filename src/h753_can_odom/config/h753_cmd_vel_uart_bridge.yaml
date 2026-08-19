@@ -23,10 +23,18 @@ h753_cmd_vel_uart_bridge:
     # integration diagnostics; standalone run_xbox_uart_drive.sh is unaffected.
     linear_command_sign: -1.0
     angular_command_sign: -1.0
-    # Physical left/right track center distance.
-    track_gauge_m: 0.50
+    # Must match STM EFFECTIVE_TRACK_WIDTH_M used by inverse kinematics.
+    track_gauge_m: 0.45
     max_track_speed_mps: 0.60
-    # Stiction floor: non-zero commands below this are raised to the minimum
-    # viable motor speed. Tune based on measured breakaway speed.
-    min_linear_mps: 0.08
-    min_angular_radps: 0.30
+    # STM open-loop feedforward is PWM[%] = track_speed / 0.60 * 100.
+    # Field testing confirmed that the loaded robot only begins moving at 50%.
+    # Raise every non-zero moving track to 50%; exact zero remains stopped.
+    min_track_pwm_percent: 50.0
+    # A tracked in-place turn needs more breakaway torque than translation.
+    # Keep straight/curved commands on the 50% floor, but raise near-zero
+    # linear commands with non-zero yaw to 60% per track.
+    min_in_place_turn_pwm_percent: 60.0
+    in_place_turn_linear_threshold_mps: 0.02
+    # Same target deadband as the STM firmware. It also keeps an intentionally
+    # stationary inner track at zero during a one-track pivot.
+    track_zero_deadband_mps: 0.01

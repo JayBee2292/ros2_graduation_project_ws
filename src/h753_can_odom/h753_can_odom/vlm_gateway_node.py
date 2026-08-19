@@ -64,6 +64,106 @@ class VlmSafetyGate:
         self.stop_active = bool(normalized)
         return StopUpdate(True, normalized, changed, valid)
 
+    def assert_local_stop(self) -> bool:
+        """Latch stop from an on-board trigger (e.g. YOLO) with no server round trip.
+
+        Only the VLM server can clear this (via update_stop(0)), same as a
+        server-originated stop. Returns True if this call changed the state.
+        """
+        if not self.communication_enabled:
+            return False
+        changed = not self.stop_active
+        self.stop_active = True
+        return changed
+
+
+class LocalDetectionRearmGate:
+    """Suppress repeated local YOLO stops until the judged target is gone."""
+
+    def __init__(
+        self,
+        gate_topics: tuple[str, ...],
+        cooldown_s: float,
+        clear_hold_s: float,
+    ) -> None:
+        if not gate_topics:
+            raise ValueError('gate_topics must not be empty')
+        if cooldown_s < 0.0 or not math.isfinite(cooldown_s):
+            raise ValueError('cooldown_s must be finite and non-negative')
+        if clear_hold_s <= 0.0 or not math.isfinite(clear_hold_s):
+            raise ValueError('clear_hold_s must be finite and positive')
+
+        self.cooldown_s = cooldown_s
+        self.clear_hold_s = clear_hold_s
+        self.detection_armed = True
+        self.rearm_not_before: float | None = None
+        self.clear_since: float | None = None
+        self._gate_state = {topic: False for topic in gate_topics}
+
+    @property
+    def gate_active(self) -> bool:
+        return any(self._gate_state.values())
+
+    @property
+    def gate_state(self) -> dict[str, int]:
+        return {
+            topic: int(active)
+            for topic, active in self._gate_state.items()
+        }
+
+    def update_gate(self, topic: str, value: int, now: float) -> bool:
+        """Update a YOLO level and return True only for an armed rising edge."""
+        previous = self._gate_state.get(topic, False)
+        active = value != 0
+        self._gate_state[topic] = active
+        self._update_clear_timer(now)
+        return self.detection_armed and not previous and active
+
+    def block_after_validated_clear(self, now: float) -> None:
+        """Disarm local re-stops after the server clears a completed judgment."""
+        self.detection_armed = False
+        self.rearm_not_before = now + self.cooldown_s
+        self.clear_since = now if not self.gate_active else None
+
+    def tick(self, now: float, server_armed: bool | None = None) -> bool:
+        """Advance the rearm timer and return True on a disarmed->armed change."""
+        if self.detection_armed:
+            return False
+        self._update_clear_timer(now)
+        # A fresh VLM status is the final source of truth. None keeps backward
+        # compatibility if an older server is offline or has no status topic.
+        if server_armed is False:
+            return False
+        if self.rearm_not_before is None or now < self.rearm_not_before:
+            return False
+        if self.clear_since is None:
+            return False
+        if now - self.clear_since < self.clear_hold_s:
+            return False
+
+        self.detection_armed = True
+        self.rearm_not_before = None
+        self.clear_since = None
+        return True
+
+    def cooldown_remaining_s(self, now: float) -> float:
+        if self.detection_armed or self.rearm_not_before is None:
+            return 0.0
+        return max(0.0, self.rearm_not_before - now)
+
+    def clear_held_s(self, now: float) -> float:
+        if self.detection_armed or self.clear_since is None:
+            return 0.0
+        return max(0.0, now - self.clear_since)
+
+    def _update_clear_timer(self, now: float) -> None:
+        if self.detection_armed:
+            return
+        if self.gate_active:
+            self.clear_since = None
+        elif self.clear_since is None:
+            self.clear_since = now
+
 
 class VlmGatewayNode(Node):
     """Own the robot side of the DDS contract with the remote VLM server."""
@@ -85,15 +185,24 @@ class VlmGatewayNode(Node):
         self.declare_parameter('server_injury_stop_topic', '/vlm/injury_stop')
         self.declare_parameter('server_result_topic', '/vlm/result')
         self.declare_parameter('server_result_detail_topic', '/vlm/result_detail')
+        self.declare_parameter('server_status_topic', '/vlm/status')
         self.declare_parameter('safety_stop_topic', '/safety/vlm_stop')
         self.declare_parameter('result_output_topic', '/vlm/gateway/result')
         self.declare_parameter(
             'result_detail_output_topic',
             '/vlm/gateway/result_detail',
         )
-        self.declare_parameter('status_topic', '/vlm/status')
+        self.declare_parameter('status_topic', '/vlm/gateway/status')
         self.declare_parameter('mode_topic', '/robot_mode')
         self.declare_parameter('enabled_modes', list(DEFAULT_ENABLED_MODES))
+        # On-board YOLO gate topics (h753_perception). A rising edge here
+        # latches /safety/vlm_stop immediately, without waiting on the remote
+        # VLM server round trip. The server remains the only way to clear it.
+        self.declare_parameter('yolo_person_topic', '/yolo/person_found')
+        self.declare_parameter('yolo_blue_person_topic', '/yolo/blue_person')
+        self.declare_parameter('local_rearm_cooldown_s', 15.0)
+        self.declare_parameter('local_rearm_clear_s', 2.0)
+        self.declare_parameter('local_rearm_check_period_s', 0.2)
         self.declare_parameter('response_timeout_s', 3.0)
         self.declare_parameter('status_period_s', 1.0)
         self.declare_parameter('max_result_chars', 20000)
@@ -113,6 +222,9 @@ class VlmGatewayNode(Node):
         self.server_result_detail_topic = str(
             self.get_parameter('server_result_detail_topic').value
         )
+        self.server_status_topic = str(
+            self.get_parameter('server_status_topic').value
+        )
         self.safety_stop_topic = str(
             self.get_parameter('safety_stop_topic').value
         )
@@ -127,6 +239,21 @@ class VlmGatewayNode(Node):
         enabled_modes = tuple(
             int(mode) for mode in self.get_parameter('enabled_modes').value
         )
+        self.yolo_person_topic = str(
+            self.get_parameter('yolo_person_topic').value
+        )
+        self.yolo_blue_person_topic = str(
+            self.get_parameter('yolo_blue_person_topic').value
+        )
+        self.local_rearm_cooldown_s = float(
+            self.get_parameter('local_rearm_cooldown_s').value
+        )
+        self.local_rearm_clear_s = float(
+            self.get_parameter('local_rearm_clear_s').value
+        )
+        self.local_rearm_check_period_s = float(
+            self.get_parameter('local_rearm_check_period_s').value
+        )
         self.response_timeout_s = float(
             self.get_parameter('response_timeout_s').value
         )
@@ -139,6 +266,8 @@ class VlmGatewayNode(Node):
             raise ValueError(
                 'server_injury_stop_topic and safety_stop_topic must differ'
             )
+        if self.server_status_topic == self.status_topic:
+            raise ValueError('server_status_topic and status_topic must differ')
         if self.response_timeout_s <= 0.0 or not math.isfinite(
             self.response_timeout_s
         ):
@@ -147,9 +276,27 @@ class VlmGatewayNode(Node):
             raise ValueError('status_period_s must be finite and positive')
         if self.max_result_chars <= 0:
             raise ValueError('max_result_chars must be positive')
+        if (
+            self.local_rearm_check_period_s <= 0.0
+            or not math.isfinite(self.local_rearm_check_period_s)
+        ):
+            raise ValueError(
+                'local_rearm_check_period_s must be finite and positive'
+            )
 
         self.gate = VlmSafetyGate(enabled_modes)
+        self.local_rearm = LocalDetectionRearmGate(
+            (
+                self.yolo_person_topic,
+                self.yolo_blue_person_topic,
+            ),
+            self.local_rearm_cooldown_s,
+            self.local_rearm_clear_s,
+        )
         self.last_response_at: float | None = None
+        self.last_server_status_at: float | None = None
+        self.server_detection_armed: bool | None = None
+        self.server_status_payload: dict[str, object] = {}
         self.forwarded_images = 0
         self.received_responses = 0
         self.last_status_state: str | None = None
@@ -212,6 +359,20 @@ class VlmGatewayNode(Node):
             reliable_qos,
         )
         self.create_subscription(
+            Int32,
+            self.yolo_person_topic,
+            lambda msg: self._yolo_gate_callback(self.yolo_person_topic, msg),
+            10,
+        )
+        self.create_subscription(
+            Int32,
+            self.yolo_blue_person_topic,
+            lambda msg: self._yolo_gate_callback(
+                self.yolo_blue_person_topic, msg
+            ),
+            10,
+        )
+        self.create_subscription(
             String,
             self.server_result_topic,
             self._result_callback,
@@ -224,12 +385,22 @@ class VlmGatewayNode(Node):
             reliable_qos,
         )
         self.create_subscription(
+            String,
+            self.server_status_topic,
+            self._server_status_callback,
+            reliable_qos,
+        )
+        self.create_subscription(
             UInt8,
             self.mode_topic,
             self._mode_callback,
             latched_qos,
         )
         self.create_timer(self.status_period_s, self._status_timer_callback)
+        self.create_timer(
+            self.local_rearm_check_period_s,
+            self._local_rearm_timer_callback,
+        )
 
         # Absence of the optional server does not block driving because the UART
         # latch defaults inactive. Do not publish a synthetic zero here: after a
@@ -239,6 +410,11 @@ class VlmGatewayNode(Node):
             'VLM gateway ready: '
             f'{self.camera_input_topic} -> {self.server_image_topic}, '
             f'{self.server_injury_stop_topic} -> {self.safety_stop_topic}, '
+            f'{self.server_status_topic} -> {self.status_topic}, '
+            f'{self.yolo_person_topic}/{self.yolo_blue_person_topic} -> '
+            f'{self.safety_stop_topic} (instant, local), '
+            f'local_rearm={self.local_rearm_cooldown_s:.1f}s cooldown + '
+            f'{self.local_rearm_clear_s:.1f}s clear, '
             f'enabled_modes={sorted(self.gate.enabled_modes)}'
         )
 
@@ -267,6 +443,8 @@ class VlmGatewayNode(Node):
             self.get_logger().error(
                 f'Invalid server injury_stop={value}; normalized to fail-safe stop=1'
             )
+        if update.changed and update.value == 0:
+            self.local_rearm.block_after_validated_clear(time.monotonic())
         self._publish_safety_stop(update.value)
         if update.changed:
             if update.value:
@@ -276,6 +454,24 @@ class VlmGatewayNode(Node):
                 )
             else:
                 self.get_logger().info('Validated VLM stop cleared')
+        self._publish_status()
+
+    def _yolo_gate_callback(self, topic: str, msg: Int32) -> None:
+        value = int(msg.data)
+        should_assert_stop = self.local_rearm.update_gate(
+            topic,
+            value,
+            time.monotonic(),
+        )
+        if not should_assert_stop:
+            return
+        if not self.gate.assert_local_stop():
+            return
+        self._publish_safety_stop(1)
+        self.get_logger().warn(
+            f'On-board YOLO stop asserted from {topic}; no server round trip '
+            'needed. Forwarding video for VLM confirmation.'
+        )
         self._publish_status()
 
     def _result_callback(self, msg: String) -> None:
@@ -291,6 +487,28 @@ class VlmGatewayNode(Node):
         self.result_detail_pub.publish(
             String(data=self._bounded_text(msg.data))
         )
+
+    def _server_status_callback(self, msg: String) -> None:
+        self._record_response()
+        try:
+            payload = json.loads(msg.data)
+        except (TypeError, ValueError) as exc:
+            self.get_logger().warn(f'Invalid VLM server status JSON: {exc}')
+            return
+        if not isinstance(payload, dict):
+            self.get_logger().warn('Invalid VLM server status: expected object')
+            return
+
+        detection_armed = payload.get('detection_armed')
+        if not isinstance(detection_armed, bool):
+            self.get_logger().warn(
+                'Invalid VLM server status: detection_armed must be boolean'
+            )
+            return
+        self.last_server_status_at = time.monotonic()
+        self.server_detection_armed = detection_armed
+        self.server_status_payload = payload
+        self._publish_status()
 
     def _bounded_text(self, value: str) -> str:
         if len(value) <= self.max_result_chars:
@@ -310,6 +528,23 @@ class VlmGatewayNode(Node):
     def _status_timer_callback(self) -> None:
         self._publish_status()
 
+    def _local_rearm_timer_callback(self) -> None:
+        now = time.monotonic()
+        server_armed = self._fresh_server_detection_armed(now)
+        if not self.local_rearm.tick(now, server_armed=server_armed):
+            return
+        self.get_logger().info(
+            'Local YOLO stop re-armed after cooldown and continuous clear'
+        )
+        self._publish_status()
+
+    def _fresh_server_detection_armed(self, now: float) -> bool | None:
+        if self.last_server_status_at is None:
+            return None
+        if now - self.last_server_status_at > self.response_timeout_s:
+            return None
+        return self.server_detection_armed
+
     def _publish_status(self) -> None:
         now = time.monotonic()
         age = (
@@ -323,6 +558,7 @@ class VlmGatewayNode(Node):
             'result_detail': self.count_publishers(
                 self.server_result_detail_topic
             ),
+            'status': self.count_publishers(self.server_status_topic),
         }
         discovered = any(count > 0 for count in publisher_counts.values())
         stale = age is not None and age > self.response_timeout_s
@@ -331,6 +567,8 @@ class VlmGatewayNode(Node):
             state = 'disabled'
         elif self.gate.stop_active:
             state = 'stop_latched'
+        elif not self.local_rearm.detection_armed:
+            state = 'rearm_wait'
         elif not discovered:
             state = 'waiting_for_server'
         elif age is None:
@@ -346,6 +584,26 @@ class VlmGatewayNode(Node):
             'mode_enabled': self.gate.mode_enabled,
             'communication_enabled': self.gate.communication_enabled,
             'injury_stop': int(self.gate.stop_active),
+            'local_detection_armed': self.local_rearm.detection_armed,
+            'local_rearm_cooldown_s': self.local_rearm_cooldown_s,
+            'local_rearm_clear_s': self.local_rearm_clear_s,
+            'local_rearm_cooldown_remaining_s': round(
+                self.local_rearm.cooldown_remaining_s(now),
+                3,
+            ),
+            'local_clear_held_s': round(
+                self.local_rearm.clear_held_s(now),
+                3,
+            ),
+            'yolo_gate_active': self.local_rearm.gate_active,
+            'yolo_gate_state': self.local_rearm.gate_state,
+            'server_detection_armed': self.server_detection_armed,
+            'server_status_age_s': (
+                None
+                if self.last_server_status_at is None
+                else round(max(0.0, now - self.last_server_status_at), 3)
+            ),
+            'server_vlm_status': self.server_status_payload,
             'server_discovered': discovered,
             'response_age_s': None if age is None else round(age, 3),
             'response_timeout_s': self.response_timeout_s,

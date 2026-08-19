@@ -13,18 +13,29 @@ h753_vlm_gateway:
     server_injury_stop_topic: /vlm/injury_stop
     server_result_topic: /vlm/result
     server_result_detail_topic: /vlm/result_detail
+    # The existing VLM server publishes detection_armed and cooldown fields
+    # here once per second. The gateway consumes it without changing vlm.py.
+    server_status_topic: /vlm/status
 
     # Only this validated robot-internal topic may control the UART safety gate.
     safety_stop_topic: /safety/vlm_stop
     result_output_topic: /vlm/gateway/result
     result_detail_output_topic: /vlm/gateway/result_detail
-    status_topic: /vlm/status
+    # Gateway aggregate status must not share the server's JSON topic.
+    status_topic: /vlm/gateway/status
     mode_topic: /robot_mode
     enabled_modes: [3, 4, 5]
 
-    # The current server has no heartbeat, so discovery plus the age of any VLM
-    # response is reported. A stale zero does not stop the robot; a received one
-    # stays latched until the server explicitly sends zero.
+    # After a validated VLM clear, suppress repeated on-board YOLO stop edges
+    # from the same person. Rearm only after the server's 15 s cooldown and
+    # both YOLO gates have remained clear for 2 s.
+    local_rearm_cooldown_s: 15.0
+    local_rearm_clear_s: 2.0
+    local_rearm_check_period_s: 0.2
+
+    # The current server publishes /vlm/status once per second. Discovery and
+    # response age are reported; a received stop remains latched until the
+    # server explicitly sends zero.
     response_timeout_s: 3.0
     status_period_s: 1.0
     max_result_chars: 20000
