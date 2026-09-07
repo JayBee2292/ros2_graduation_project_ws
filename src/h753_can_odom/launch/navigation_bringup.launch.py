@@ -24,6 +24,7 @@ def generate_launch_description():
     launch_lidar = LaunchConfiguration('launch_lidar')
     launch_camera = LaunchConfiguration('launch_camera')
     launch_vlm_gateway = LaunchConfiguration('launch_vlm_gateway')
+    launch_mission_data = LaunchConfiguration('launch_mission_data')
     launch_yolo_perception = LaunchConfiguration('launch_yolo_perception')
     yolo_python_executable = LaunchConfiguration('yolo_python_executable')
     yolo_params = LaunchConfiguration('yolo_params')
@@ -45,6 +46,7 @@ def generate_launch_description():
     collision_monitor_params = LaunchConfiguration('collision_monitor_params')
     uart_bridge_params = LaunchConfiguration('uart_bridge_params')
     vlm_gateway_params = LaunchConfiguration('vlm_gateway_params')
+    mission_data_params = LaunchConfiguration('mission_data_params')
     uart_port = LaunchConfiguration('uart_port')
     rviz_config = LaunchConfiguration('rviz_config')
     nav2_bond_timeout = LaunchConfiguration('nav2_bond_timeout')
@@ -57,6 +59,7 @@ def generate_launch_description():
         DeclareLaunchArgument('launch_lidar', default_value='true'),
         DeclareLaunchArgument('launch_camera', default_value='true'),
         DeclareLaunchArgument('launch_vlm_gateway', default_value='true'),
+        DeclareLaunchArgument('launch_mission_data', default_value='true'),
         DeclareLaunchArgument('launch_yolo_perception', default_value='false'),
         DeclareLaunchArgument(
             'yolo_python_executable',
@@ -149,9 +152,16 @@ def generate_launch_description():
             default_value=str(h753_share / 'config' / 'h753_vlm_gateway.yaml'),
         ),
         DeclareLaunchArgument(
+            'mission_data_params',
+            default_value=str(h753_share / 'config' / 'h753_mission_data.yaml'),
+        ),
+        DeclareLaunchArgument(
             'uart_port',
             default_value='',
-            description='STM ST-LINK VCP UART path. Empty selects the ST-LINK /dev/serial/by-id path.',
+            description=(
+                'STM ST-LINK VCP UART path. Empty selects the ST-LINK '
+                '/dev/serial/by-id path.'
+            ),
         ),
         DeclareLaunchArgument(
             'rviz_config',
@@ -260,6 +270,38 @@ def generate_launch_description():
                 "'", launch_vlm_gateway, "' == 'true' and '",
                 launch_camera, "' == 'true'",
             ])),
+        ),
+        Node(
+            package='h753_can_odom',
+            executable='mission_data_recorder_node',
+            name='h753_mission_data_recorder',
+            output='screen',
+            parameters=[
+                mission_data_params,
+                {
+                    'localization_backend': ParameterValue(
+                        localization_backend,
+                        value_type=str,
+                    ),
+                    'map_yaml_path': ParameterValue(
+                        static_map_yaml,
+                        value_type=str,
+                    ),
+                    'posegraph_base_path': ParameterValue(
+                        posegraph_file,
+                        value_type=str,
+                    ),
+                },
+            ],
+            condition=IfCondition(launch_mission_data),
+        ),
+        Node(
+            package='h753_can_odom',
+            executable='mission_uploader_node',
+            name='h753_mission_uploader',
+            output='screen',
+            parameters=[mission_data_params],
+            condition=IfCondition(launch_mission_data),
         ),
         ExecuteProcess(
             cmd=[

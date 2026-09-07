@@ -40,6 +40,8 @@ setup(
             'go2_manual_drive_node = h753_can_odom.go2_manual_drive_node:main',
             'robot_mode_manager_node = h753_can_odom.robot_mode_manager_node:main',
             'vlm_gateway_node = h753_can_odom.vlm_gateway_node:main',
+            'mission_data_recorder_node = h753_can_odom.mission_data_recorder_node:main',
+            'mission_uploader_node = h753_can_odom.mission_uploader_node:main',
         ],
     },
 )

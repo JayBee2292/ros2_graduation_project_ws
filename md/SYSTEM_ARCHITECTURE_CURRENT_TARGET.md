@@ -7,7 +7,7 @@
 - 서버 VLM 문서: `/home/jyl1015/Downloads/jjproject_collaboration_guide.md`
 - 젯슨 ROS 2 워크스페이스의 `h753_perception`, `h753_vlm_gateway`, `cmd_vel_uart_bridge`, SLAM/Nav2 구성
 
-![현재 구현과 목표 구조](./system_architecture_current_target.svg)
+![현재 구현과 목표 구조](../system_architecture_current_target.svg)
 
 ## 1. 역할 분리 원칙
 
@@ -51,6 +51,13 @@ GPU 기반 의미 분석, 영속 저장, 운영자 인터페이스를 담당한�
 - 카메라 압축 영상을 `/vlm/request/image/compressed`로 전달할 수 있다.
 - `/vlm/result`, `/vlm/result_detail`, `/vlm/injury_stop`과 호환되는 게이트웨이가 구현되어 있다.
 - LiDAR SLAM, Nav2, 엔코더·IMU 오도메트리와 모드별 실행 구조가 존재한다.
+- `h753_mission_data_recorder`가 mode 3/4에서 `map → base_link` 실제 경로를
+  SQLite에 누적하고, mode 4 YOLO 상승 시 detection UUID, 탐지 당시 로봇 pose,
+  `route_end_seq`, 대표 이미지를 로컬 outbox에 저장한다.
+- `h753_mission_uploader`가 지도·임무·경로·탐지·이미지의 HTTPS batch/ACK/재시도
+  계약을 제공한다. 서버 API가 준비되기 전 기본 상태는 local-only다.
+- `/mission/path`, `/mission/status`, `/mission/detection_event`,
+  `/mission/upload/status`와 명시적 임무 시작·종료 service가 구현되어 있다.
 
 ### 서버 PC
 
@@ -100,12 +107,17 @@ GPU 기반 의미 분석, 영속 저장, 운영자 인터페이스를 담당한�
 
 ### 젯슨 PC
 
-- `victim_event_manager`: detection UUID 생성, 연속 검출 확정, 중복 인물 판정
-- `victim_localizer`: `map` 기준 로봇 관측 위치와 가능한 경우 실제 사람 위치 계산
-- `mission_path_recorder`: `map → base_link` 기반 실제 이동 경로 누적
+- `victim_event_manager` 후속: 현재 gateway cycle 기반 detection UUID에서
+  ByteTrack/위치 기반 장기 동일인 판정으로 확장
+- `victim_localizer` 후속: 현재 구현된 `map` 기준 로봇 관측 위치에서 RGB-D를
+  이용한 실제 사람 위치 계산으로 확장
+- `mission_path_recorder` 후속: 현재 실제 이동 경로 기록을 장기 임무 압축과
+  다중 로봇 경로로 확장
 - `safe_route_generator`: 경로 단순화, loop 제거, 지도·여유 폭 충돌 검사
-- `map_revision_manager`: 지도 스냅샷과 posegraph revision 연결
-- `mission_uploader`: 이미지·지도·경로·메타데이터 전송, 로컬 outbox와 재전송
+- `map_revision_manager` 후속: 현재 AMCL YAML/PGM 및 posegraph hash를 서버의
+  지도 revision 승인·스냅샷 정책과 연결
+- `mission_uploader` 후속: 현재 구현된 local outbox/HTTPS 클라이언트를 실제
+  서버 endpoint, TLS 인증서와 연결해 ACK 재전송을 현장 검증
 - `mission_command_guard`: 서버 명령을 검증하고 안전할 때만 주행 재개
 
 ### 서버 PC

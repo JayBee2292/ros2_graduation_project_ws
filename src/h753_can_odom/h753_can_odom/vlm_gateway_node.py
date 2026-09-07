@@ -30,6 +30,95 @@ class StopUpdate:
     valid: bool
 
 
+@dataclass(frozen=True)
+class DecisionValidation:
+    accepted: bool
+    stop_value: int
+    reason: str
+
+
+class DecisionCorrelationGate:
+    """Allow a VLM clear only for the active Jetson detection context."""
+
+    def __init__(self, max_age_s: float = 300.0) -> None:
+        if max_age_s <= 0.0 or not math.isfinite(max_age_s):
+            raise ValueError('max_age_s must be finite and positive')
+        self.max_age_s = max_age_s
+        self.mission_id: str | None = None
+        self.detection_id: str | None = None
+        self.received_at: float | None = None
+
+    def update_detection(
+        self,
+        payload: object,
+        now: float,
+    ) -> bool:
+        if not isinstance(payload, dict):
+            return False
+        if payload.get('schema_version') != 1:
+            return False
+        mission_id = payload.get('mission_id')
+        detection_id = payload.get('detection_id')
+        if not isinstance(mission_id, str) or not mission_id:
+            return False
+        if not isinstance(detection_id, str) or not detection_id:
+            return False
+        self.mission_id = mission_id
+        self.detection_id = detection_id
+        self.received_at = now
+        return True
+
+    def validate(
+        self,
+        payload: object,
+        now: float,
+    ) -> DecisionValidation:
+        if not isinstance(payload, dict):
+            return DecisionValidation(False, 1, 'expected_json_object')
+        raw_stop = payload.get('stop')
+        if isinstance(raw_stop, bool):
+            stop_value = int(raw_stop)
+        elif isinstance(raw_stop, int) and raw_stop in (0, 1):
+            stop_value = raw_stop
+        else:
+            return DecisionValidation(False, 1, 'invalid_stop_value')
+
+        if payload.get('schema_version') != 1:
+            return DecisionValidation(
+                False,
+                stop_value,
+                'schema_version_mismatch',
+            )
+        if self.detection_id is None or self.mission_id is None:
+            return DecisionValidation(
+                False,
+                stop_value,
+                'no_active_detection',
+            )
+        if payload.get('mission_id') != self.mission_id:
+            return DecisionValidation(
+                False,
+                stop_value,
+                'mission_id_mismatch',
+            )
+        if payload.get('detection_id') != self.detection_id:
+            return DecisionValidation(
+                False,
+                stop_value,
+                'detection_id_mismatch',
+            )
+        if (
+            self.received_at is None
+            or now - self.received_at > self.max_age_s
+        ):
+            return DecisionValidation(
+                False,
+                stop_value,
+                'decision_expired',
+            )
+        return DecisionValidation(True, stop_value, 'accepted')
+
+
 class VlmSafetyGate:
     """Mode-aware state machine between an external VLM and robot safety."""
 
@@ -186,6 +275,13 @@ class VlmGatewayNode(Node):
         self.declare_parameter('server_result_topic', '/vlm/result')
         self.declare_parameter('server_result_detail_topic', '/vlm/result_detail')
         self.declare_parameter('server_status_topic', '/vlm/status')
+        self.declare_parameter('server_decision_topic', '/vlm/decision')
+        self.declare_parameter(
+            'detection_event_topic',
+            '/mission/detection_event',
+        )
+        self.declare_parameter('require_correlated_decision', False)
+        self.declare_parameter('decision_max_age_s', 300.0)
         self.declare_parameter('safety_stop_topic', '/safety/vlm_stop')
         self.declare_parameter('result_output_topic', '/vlm/gateway/result')
         self.declare_parameter(
@@ -224,6 +320,18 @@ class VlmGatewayNode(Node):
         )
         self.server_status_topic = str(
             self.get_parameter('server_status_topic').value
+        )
+        self.server_decision_topic = str(
+            self.get_parameter('server_decision_topic').value
+        )
+        self.detection_event_topic = str(
+            self.get_parameter('detection_event_topic').value
+        )
+        self.require_correlated_decision = bool(
+            self.get_parameter('require_correlated_decision').value
+        )
+        self.decision_max_age_s = float(
+            self.get_parameter('decision_max_age_s').value
         )
         self.safety_stop_topic = str(
             self.get_parameter('safety_stop_topic').value
@@ -293,12 +401,17 @@ class VlmGatewayNode(Node):
             self.local_rearm_cooldown_s,
             self.local_rearm_clear_s,
         )
+        self.decision_correlation = DecisionCorrelationGate(
+            self.decision_max_age_s
+        )
         self.last_response_at: float | None = None
         self.last_server_status_at: float | None = None
         self.server_detection_armed: bool | None = None
         self.server_status_payload: dict[str, object] = {}
         self.forwarded_images = 0
         self.received_responses = 0
+        self.rejected_decisions = 0
+        self.last_decision_rejection = ''
         self.last_status_state: str | None = None
 
         sensor_qos = QoSProfile(
@@ -391,6 +504,24 @@ class VlmGatewayNode(Node):
             reliable_qos,
         )
         self.create_subscription(
+            String,
+            self.server_decision_topic,
+            self._correlated_decision_callback,
+            reliable_qos,
+        )
+        detection_event_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=10,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self.create_subscription(
+            String,
+            self.detection_event_topic,
+            self._detection_event_callback,
+            detection_event_qos,
+        )
+        self.create_subscription(
             UInt8,
             self.mode_topic,
             self._mode_callback,
@@ -436,6 +567,15 @@ class VlmGatewayNode(Node):
     def _injury_stop_callback(self, msg: Int32) -> None:
         value = int(msg.data)
         self._record_response()
+        if self.require_correlated_decision and value == 0:
+            self.rejected_decisions += 1
+            self.last_decision_rejection = 'uncorrelated_legacy_clear'
+            self.get_logger().error(
+                'Rejected legacy VLM clear without mission_id/detection_id; '
+                f'publish {self.server_decision_topic} instead'
+            )
+            self._publish_status()
+            return
         update = self.gate.update_stop(value)
         if not update.accepted:
             return
@@ -454,6 +594,56 @@ class VlmGatewayNode(Node):
                 )
             else:
                 self.get_logger().info('Validated VLM stop cleared')
+        self._publish_status()
+
+    def _detection_event_callback(self, msg: String) -> None:
+        try:
+            payload = json.loads(msg.data)
+        except (TypeError, ValueError) as exc:
+            self.get_logger().warn(f'Invalid detection event JSON: {exc}')
+            return
+        if not self.decision_correlation.update_detection(
+            payload,
+            time.monotonic(),
+        ):
+            self.get_logger().warn(
+                'Ignored detection event without schema_version=1 and IDs'
+            )
+            return
+        self.last_decision_rejection = ''
+        self._publish_status()
+
+    def _correlated_decision_callback(self, msg: String) -> None:
+        self._record_response()
+        try:
+            payload = json.loads(msg.data)
+        except (TypeError, ValueError):
+            payload = None
+        validation = self.decision_correlation.validate(
+            payload,
+            time.monotonic(),
+        )
+        if not validation.accepted:
+            self.rejected_decisions += 1
+            self.last_decision_rejection = validation.reason
+            if validation.stop_value != 0:
+                update = self.gate.update_stop(1)
+                if update.accepted:
+                    self._publish_safety_stop(1)
+            self.get_logger().error(
+                'Rejected uncorrelated VLM decision: '
+                f'{validation.reason}; clear was not applied'
+            )
+            self._publish_status()
+            return
+
+        self.last_decision_rejection = ''
+        update = self.gate.update_stop(validation.stop_value)
+        if not update.accepted:
+            return
+        if update.changed and update.value == 0:
+            self.local_rearm.block_after_validated_clear(time.monotonic())
+        self._publish_safety_stop(update.value)
         self._publish_status()
 
     def _yolo_gate_callback(self, topic: str, msg: Int32) -> None:
@@ -559,6 +749,7 @@ class VlmGatewayNode(Node):
                 self.server_result_detail_topic
             ),
             'status': self.count_publishers(self.server_status_topic),
+            'decision': self.count_publishers(self.server_decision_topic),
         }
         discovered = any(count > 0 for count in publisher_counts.values())
         stale = age is not None and age > self.response_timeout_s
@@ -610,6 +801,11 @@ class VlmGatewayNode(Node):
             'publisher_counts': publisher_counts,
             'forwarded_images': self.forwarded_images,
             'received_responses': self.received_responses,
+            'require_correlated_decision': self.require_correlated_decision,
+            'active_mission_id': self.decision_correlation.mission_id,
+            'active_detection_id': self.decision_correlation.detection_id,
+            'rejected_decisions': self.rejected_decisions,
+            'last_decision_rejection': self.last_decision_rejection,
         }
         self.status_pub.publish(
             String(data=json.dumps(status, ensure_ascii=False, sort_keys=True))

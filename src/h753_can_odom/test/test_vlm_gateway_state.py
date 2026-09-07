@@ -1,7 +1,85 @@
 from h753_can_odom.vlm_gateway_node import (
+    DecisionCorrelationGate,
     LocalDetectionRearmGate,
     VlmSafetyGate,
 )
+
+
+def test_correlated_decision_accepts_only_active_detection():
+    gate = DecisionCorrelationGate(max_age_s=30.0)
+    assert gate.update_detection(
+        {
+            'schema_version': 1,
+            'mission_id': 'mission-1',
+            'detection_id': 'detection-1',
+        },
+        now=10.0,
+    )
+
+    accepted = gate.validate(
+        {
+            'schema_version': 1,
+            'mission_id': 'mission-1',
+            'detection_id': 'detection-1',
+            'stop': 0,
+        },
+        now=20.0,
+    )
+    stale = gate.validate(
+        {
+            'schema_version': 1,
+            'mission_id': 'mission-1',
+            'detection_id': 'old-detection',
+            'stop': 0,
+        },
+        now=20.0,
+    )
+
+    assert accepted.accepted is True
+    assert accepted.stop_value == 0
+    assert stale.accepted is False
+    assert stale.reason == 'detection_id_mismatch'
+
+
+def test_uncorrelated_or_expired_clear_is_rejected():
+    gate = DecisionCorrelationGate(max_age_s=5.0)
+    no_context = gate.validate(
+        {
+            'schema_version': 1,
+            'mission_id': 'mission-1',
+            'detection_id': 'detection-1',
+            'stop': 0,
+        },
+        now=1.0,
+    )
+    gate.update_detection(
+        {
+            'schema_version': 1,
+            'mission_id': 'mission-1',
+            'detection_id': 'detection-1',
+        },
+        now=2.0,
+    )
+    expired = gate.validate(
+        {
+            'schema_version': 1,
+            'mission_id': 'mission-1',
+            'detection_id': 'detection-1',
+            'stop': 0,
+        },
+        now=8.0,
+    )
+
+    assert no_context.reason == 'no_active_detection'
+    assert expired.reason == 'decision_expired'
+
+
+def test_invalid_correlated_decision_normalizes_fail_safe_stop():
+    gate = DecisionCorrelationGate()
+    invalid = gate.validate({'stop': 'go'}, now=0.0)
+
+    assert invalid.accepted is False
+    assert invalid.stop_value == 1
 
 
 def test_mapping_modes_do_not_accept_server_stop():

@@ -413,6 +413,7 @@ class RobotModeManagerNode(Node):
         self.declare_parameter('launch_rviz', True)
         self.declare_parameter('launch_camera', True)
         self.declare_parameter('launch_vlm_gateway', True)
+        self.declare_parameter('launch_mission_data', True)
         self.declare_parameter('launch_yolo_perception', True)
         self.declare_parameter('yolo_enabled_modes', [4, 5])
         self.declare_parameter('yolo_person_found_topic', '/yolo/person_found')
@@ -483,6 +484,9 @@ class RobotModeManagerNode(Node):
         self.launch_camera = bool(self.get_parameter('launch_camera').value)
         self.launch_vlm_gateway = bool(
             self.get_parameter('launch_vlm_gateway').value
+        )
+        self.launch_mission_data = bool(
+            self.get_parameter('launch_mission_data').value
         )
         self.launch_yolo_perception = bool(
             self.get_parameter('launch_yolo_perception').value
@@ -1176,6 +1180,7 @@ class RobotModeManagerNode(Node):
                 f'localization_backend:={self.localization_backend}',
                 f'static_map_yaml:={self.static_map_yaml}',
                 f'amcl_params:={amcl_params}',
+                f'launch_mission_data:={bool_text(self.launch_mission_data)}',
                 f'realsense_params:={realsense_profile}',
                 f'launch_yolo_perception:={bool_text(perception_enabled)}',
                 f'yolo_python_executable:={self.yolo_python_executable}',
@@ -1678,7 +1683,9 @@ class RobotModeManagerNode(Node):
         return bool(msg.buttons[index]) if 0 <= index < len(msg.buttons) else False
 
     def _previous_button(self, index: int) -> bool:
-        return bool(self.previous_buttons[index]) if 0 <= index < len(self.previous_buttons) else False
+        if 0 <= index < len(self.previous_buttons):
+            return bool(self.previous_buttons[index])
+        return False
 
     def _button_edge(self, msg: Joy, index: int) -> bool:
         return self._button(msg, index) and not self._previous_button(index)

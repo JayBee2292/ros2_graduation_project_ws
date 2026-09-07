@@ -16,6 +16,14 @@ h753_vlm_gateway:
     # The existing VLM server publishes detection_armed and cooldown fields
     # here once per second. The gateway consumes it without changing vlm.py.
     server_status_topic: /vlm/status
+    # New correlated contract. The server must publish one JSON object with
+    # schema_version, mission_id, detection_id and stop (0/1).
+    server_decision_topic: /vlm/decision
+    detection_event_topic: /mission/detection_event
+    # Keep false until the server stops relying on the ID-less Int32 clear.
+    # Once server VLM is updated and verified, set true to reject legacy clear.
+    require_correlated_decision: false
+    decision_max_age_s: 300.0
 
     # Only this validated robot-internal topic may control the UART safety gate.
     safety_stop_topic: /safety/vlm_stop

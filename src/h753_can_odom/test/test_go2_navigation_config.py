@@ -209,6 +209,28 @@ def test_mode_manager_defaults_to_workspace_go2_amcl_map() -> None:
 
     assert params['localization_backend'] == 'amcl'
     assert params['static_map_yaml'].endswith('/maps/go2/go2_map.yaml')
+    assert params['launch_mission_data'] is True
+
+
+def test_navigation_launch_owns_jetson_mission_recording() -> None:
+    source = (
+        LAUNCH_DIR / 'navigation_bringup.launch.py'
+    ).read_text(encoding='utf-8')
+    config = load_config('h753_mission_data.yaml')
+    recorder = config['h753_mission_data_recorder']['ros__parameters']
+    uploader = config['h753_mission_uploader']['ros__parameters']
+
+    assert "executable='mission_data_recorder_node'" in source
+    assert "executable='mission_uploader_node'" in source
+    assert "'map_yaml_path': ParameterValue(" in source
+    assert recorder['active_modes'] == [3, 4]
+    assert recorder['detection_modes'] == [4]
+    assert recorder['map_frame_id'] == 'map'
+    assert recorder['sample_rate_hz'] == 2.0
+    assert recorder['min_distance_m'] == 0.05
+    assert recorder['path_publish_rate_hz'] == 1.0
+    assert uploader['api_base_url'] == ''
+    assert uploader['allow_insecure_http'] is False
 
 
 def test_workspace_go2_map_matches_validated_source_asset() -> None:

@@ -1,0 +1,79 @@
+h753_mission_data_recorder:
+  ros__parameters:
+    robot_id: h753_jetson_01
+    database_path: /home/jyl1015/.ros/h753_mission/mission_outbox.db
+    data_directory: /home/jyl1015/.ros/h753_mission
+
+    # navigation_bringup overrides these three values with the active
+    # localization launch arguments so map coordinates cannot be mixed.
+    localization_backend: amcl
+    map_yaml_path: /home/jyl1015/ros2_graduation_project_ws/maps/go2/go2_map.yaml
+    posegraph_base_path: /home/jyl1015/ros2_graduation_project_ws/maps/h753_map
+    map_frame_id: map
+    base_frame_id: base_link
+
+    mode_topic: /robot_mode
+    # Mode 3 records localization/manual takeover paths. Mode 4 additionally
+    # records YOLO victim events. Mode 5 has no map-frame localization.
+    active_modes: [3, 4]
+    detection_modes: [4]
+    auto_start_mission: true
+
+    sample_rate_hz: 2.0
+    min_distance_m: 0.05
+    min_yaw_deg: 5.0
+    max_record_interval_s: 5.0
+    # A larger discontinuity starts a new route segment instead of silently
+    # treating an AMCL correction as physical robot travel.
+    max_pose_jump_m: 1.0
+    max_yaw_jump_deg: 60.0
+    path_history_limit: 10000
+    # Keep RViz diagnostics responsive without republishing a growing path on
+    # every 2 Hz sample.
+    path_publish_rate_hz: 1.0
+
+    person_topic: /yolo/person_found
+    blue_person_topic: /yolo/blue_person
+    yolo_status_topic: /yolo/status
+    representative_image_topic: /yolo/detected_image/compressed
+    gateway_status_topic: /vlm/gateway/status
+    mission_path_topic: /mission/path
+    mission_status_topic: /mission/status
+    detection_event_topic: /mission/detection_event
+    start_service: /mission/start_new
+    end_service: /mission/end
+
+    # Wait briefly for the annotated frame published just after the stable
+    # YOLO edge, but commit detection metadata immediately so it cannot vanish.
+    image_wait_s: 0.25
+    image_expiry_s: 2.0
+    max_image_age_s: 2.0
+    # The safety gateway already stops the robot. If map TF is momentarily
+    # late, retry briefly rather than writing a false (0, 0) red point.
+    detection_pose_expiry_s: 5.0
+    fallback_rearm_cooldown_s: 15.0
+    fallback_rearm_clear_s: 2.0
+
+h753_mission_uploader:
+  ros__parameters:
+    database_path: /home/jyl1015/.ros/h753_mission/mission_outbox.db
+    # Empty keeps all records in the durable Jetson outbox. Set this after the
+    # server implements the API contract in the development plan.
+    api_base_url: ""
+    allow_insecure_http: false
+    # The server checklist uses X-API-Key. Read its value from the process
+    # environment and never store the credential itself in ROS YAML.
+    api_key_environment: H753_MISSION_API_KEY
+    api_key_header: X-API-Key
+    # These defaults follow the received server checklist. They remain
+    # configurable until the server OpenAPI/source is integration-tested.
+    map_upload_path: /api/v1/maps:upload
+    map_yaml_field: yaml_file
+    map_image_field: pgm_file
+    request_timeout_s: 5.0
+    poll_period_s: 0.5
+    route_batch_size: 100
+    retry_initial_s: 1.0
+    retry_max_s: 60.0
+    status_topic: /mission/upload/status
+    retry_blocked_service: /mission/upload/retry_blocked

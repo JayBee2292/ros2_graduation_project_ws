@@ -11,6 +11,21 @@ h753_ros_humble/
 .claude/
 .idea/
 
+# Runtime credentials and server mission data
+.env
+.env.*
+!.env.example
+.jjproject_env
+rescue_system.db
+mission_outbox.db
+mission_files/
+
+# Local copies of externally received server notes and superseded text export
+md/S1-S6_구현현황_체크리스트.md
+md/SERVER_TEAM_통합체크리스트_회신_260904.md
+md/KakaoTalk_*.txt
+md/DB_개발현황_서버연동_노션기록_20260907.txt
+
 # Python
 __pycache__/
 *.pyc

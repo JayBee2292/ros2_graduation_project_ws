@@ -29,6 +29,9 @@ h753_robot_mode_manager:
     # Robot-side VLM communication runs only in topologies where the manager
     # also enables the D435i (modes 3/4/5, not mapping modes 1/2/6).
     launch_vlm_gateway: true
+    # Persist map-frame routes in modes 3/4 and YOLO detection poses in mode 4.
+    # Upload remains local-only until h753_mission_data.yaml gets a server URL.
+    launch_mission_data: true
     # Run the consolidated YOLO RGB-D pipeline only in saved-map autonomous
     # navigation (mode 4) and inspection/test drive (mode 5).
     launch_yolo_perception: true

@@ -1,9 +1,10 @@
 # H753 궤도형 AMR 개발 기록 및 인수인계
 
-최종 갱신: 2026-07-27
+최종 갱신: 2026-09-07
 
 이 문서는 프로젝트 개발 기록의 단일 기준 문서다. 현재 동작 상태와 주요 개발
 흐름만 유지하며, 과거의 폐기된 추정은 기록하지 않는다.
+문서 목록과 관리 기준은 같은 디렉터리의 `README.md`를 따른다.
 
 ## 1. 시스템 구성
 
@@ -34,6 +35,15 @@ h753_vlm_gateway (보드, mode 3/4/5)
   -> optional /vlm/request/image/compressed -> 원격 VLM 서버(노트북 vlm.py)
   <- /vlm/injury_stop, /vlm/result, /vlm/result_detail  (서버 판정/해제)
   -> validated /safety/vlm_stop -> h753_cmd_vel_uart_bridge
+
+h753_mission_data_recorder (보드, mode 3/4)
+  <- TF map -> base_link + /robot_mode + /yolo/* + /vlm/gateway/status
+  -> /mission/path, /mission/status, /mission/detection_event
+  -> ~/.ros/h753_mission/mission_outbox.db + 대표 이미지
+
+h753_mission_uploader (보드, mode 3/4)
+  -> 서버 mission API (현재 URL 미설정: Jetson outbox에 안전 보관)
+  -> /mission/upload/status
 ```
 
 YOLO 즉시-정지와 VLM 서버 판정은 같은 `/safety/vlm_stop`에 병합된다. 정지는
@@ -888,6 +898,164 @@ ros2 run h753_can_odom imu_vibration_analysis \
   `h753_can_odom 109 passed`, `h753_perception 9 passed`, 변경 파일 6개 flake8과
   `git diff --check`를 통과했다. 격리 테스트의 NVIDIA device/EGL 경고는
   GPU를 열지 않는 CPU 단위 테스트 환경 메시지이며 테스트 실패는 아니다.
+
+### 2026-08-19: 실제 이동경로·YOLO 탐지 위치 Jetson 기록 계층 구현
+
+- `h753_mission_data_recorder`를 추가했다. 현재 정적 지도 위치추정이 있는 mode
+  3/4의 `navigation_bringup`에서만 실행하며, map TF가 없는 mode 5에는 올리지
+  않아 잘못된 지도 좌표 저장을 막는다. mode 3은 경로만 기록하고 YOLO가
+  실행되는 mode 4는 사람 탐지 이벤트도 기록한다.
+- 위치는 `/odom`을 직접 저장하지 않고 TF `map -> base_link`에서 2 Hz로 읽는다.
+  5 cm 이동, 5도 회전 또는 5초 heartbeat 조건에서 SQLite `route_points`에
+  저장한다. 1 m/60도보다 큰 localization 불연속은 `POSE_JUMP`와 새
+  `segment_id`로 분리한다.
+- Go2 YAML/PGM의 SHA-256, 해상도 `0.05 m`, origin, `1093 x 1596` 크기를 묶은
+  `map_id`를 임무마다 저장한다. Slam Toolbox backend 선택 시에는
+  `.posegraph/.data` checksum으로 revision을 만든다.
+- YOLO stable 0->1과 VLM gateway의 `local_detection_armed`를 결합해 한 판정
+  cycle당 detection UUID 하나만 만든다. 탐지 순간 pose를 강제로 경로 끝점에
+  넣고 `route_end_seq`와 함께 저장하므로 서버에서 사람 1/2별 경로를 중복
+  저장하지 않고 잘라 쓸 수 있다. map TF가 잠깐 늦으면 5초 재시도하고, 끝까지
+  없으면 거짓 `(0, 0)` 좌표를 쓰지 않는다.
+- `/yolo/detected_image/compressed` 대표 프레임은 detection UUID 경로 아래에
+  원자적으로 저장한다. 탐지 시각과 2초 넘게 어긋난 이미지는 잘못 연결하지
+  않고 제외한다.
+- 로컬 DB는 `missions`, `route_points`, `detections`, `outbox`와 schema version을
+  사용하며 WAL/busy timeout을 적용했다. 프로세스나 네트워크가 끊겨도 ACK 전
+  데이터는 삭제하지 않고, 같은 map/mission/detection key는 중복 enqueue하지
+  않는다. `/mission/start_new`, `/mission/end` Trigger service로 임무 경계를
+  명시할 수 있다.
+- `h753_mission_uploader`는 별도 worker thread에서 지도, 임무, 탐지, 이미지,
+  경로 batch를 HTTPS API로 보내며 idempotency key, DB commit ACK 전제,
+  exponential backoff를 지원한다. API key는 YAML이 아니라
+  `H753_MISSION_API_KEY` 환경 변수에서만 읽는다. 서버 API가 아직 없으므로
+  `api_base_url` 기본값은 비워 두었고 상태는 `disabled_local_only`다.
+- RViz navigation 화면에 파란 `/mission/path`를 추가했다. 상태는
+  `/mission/status`, 탐지 JSON은 `/mission/detection_event`, 업로드 상태는
+  `/mission/upload/status`에서 확인한다.
+- 고정 TF 격리 통합시험에서 Mode 4 임무 UUID를 생성하고
+  `(x=1.25, y=-0.50, yaw=0.30)` 경로와 YOLO detection UUID를 기록했다.
+  detection의 `route_end_seq=7`, map revision, outbox `PENDING`을 SQLite에서
+  확인했다. 서버 URL이 없을 때 네트워크 전송 없이 로컬 보관되는 의도한
+  동작이다.
+- 새 core/API/config 회귀를 포함한 `h753_can_odom` 전체 `121 passed`,
+  symlink-install 빌드, launch `--show-args`, 새 파일 flake8와 Python 문법
+  검사를 통과했다. 실제 로봇 다음 단계는 Mode 4에서 RViz `/mission/path`와
+  AMCL pose를 비교하고 사람 2명 탐지 및 실제 15 Hz 대표 이미지 저장을
+  확인하는 것이다.
+
+### 2026-09-04: 서버 S1~S6 현황 대조 및 Jetson DB 전송 계약 보정
+
+- 프로젝트가 직접 관리하는 개발일지, DB/GUI 계획서, 시스템 아키텍처와 서버
+  체크리스트 보관본을 workspace의 `md/` 디렉터리로 모았다. `md/README.md`를
+  문서 색인과 관리 기준으로 사용하며 패키지·외부 라이브러리 README는 원래
+  위치를 유지한다.
+- 서버 PC가 전달한 `S1-S6_구현현황_체크리스트.md`와 원래
+  `ROBOT_ROUTE_DATABASE_GUI_DEVELOPMENT_PLAN.md`를 대조했다. 서버의 S1/S2/S3/S5는
+  완료 보고, S4는 Jetson ID 연결과 영속 victim 관리가 남은 부분 완료, S6는
+  기본 지도 GUI 완료 상태로 판정했다. 체크리스트의 "Jetson J1~J7 미착수"는
+  현재 Jetson 구현보다 오래된 정보이므로 계획서 12절을 기준으로 바로잡았다.
+- 실제 Go2 서버 map ID `map_e5c5c16c93333f71`을 재현했다. 서버 규칙은
+  `map_ + SHA256(YAML bytes + PGM bytes)[:16]`이며 Jetson AMCL map manifest도
+  같은 규칙을 사용하도록 변경했다. YAML/PGM의 전체 checksum은 무결성 검증용으로
+  계속 별도 보존한다.
+- AMCL 지도 파일 업로드를 서버가 구현한 `POST /api/v1/maps:upload`로 변경하고
+  `yaml_file`, `pgm_file`, metadata를 multipart로 보낸다. 서버 ACK의 `map_id`가
+  Jetson 계산값과 다르면 임무를 이어 보내지 않고 재시도 오류로 보존한다.
+- 서버 인증 계약에 맞춰 Bearer token 대신 `X-API-Key`를 사용하며 비밀값은
+  `H753_MISSION_API_KEY` 환경 변수에서만 읽는다.
+- outbox 전송 실패는 이제 실제 `FAILED` 상태와 다음 재시도 시각, 오류 내용을
+  기록한다. 재시도 대상은 `PENDING/FAILED`이고 HTTP 2xx 성공 ACK를 받은 경우에만
+  `SENT`로 전환한다. ACK JSON도 `ack_json`에 저장하며 기존 DB에는 데이터 삭제
+  없이 해당 컬럼을 자동 추가한다.
+- 서버 FK 검증 순서와 맞게 `지도 ACK -> 임무 시작 ACK -> 탐지 ACK -> 이미지`의
+  dependency를 outbox 조회에서 강제한다. 지도 재시도 대기 중 존재하지 않는
+  `map_id`로 임무를 먼저 보내는 동작을 막았다.
+- 계획서 13절에 서버 담당자가 다음 답장에 사용할 통합 체크리스트 템플릿을
+  추가했다. API method/path, multipart field, request/response, DB PK/FK/unique,
+  ID 소유권, Git commit, 자동시험 근거와 미완료 항목을 필수로 받는다.
+- 계획서 14절에는 Jetson 단독 구현 완료 범위, 서버 개발 후 필요한 10단계
+  통합시험과 실제 사람 좌표·장기 동일인 추적·최적 안전 귀환경로 등 1차 범위
+  밖의 후속 기능을 분리했다. 서버 완료 후에는 대규모 재개발이 아니라 계약
+  호환 수정과 end-to-end 검증이 남는다는 기준을 명시했다.
+- 계획서 상단에 `2026-08-19 최초 계획/서버 체크리스트/Jetson 1차 구현`과
+  `2026-09-04 통합 계약 검토/현재 전달본` 비교표를 추가했다. 이후 서버 회신도
+  작성일과 적용 commit 및 이전 회신 이후 변경점을 남기도록 했다.
+- 현재 Jetson에는 체크리스트에 대응하는 최신 서버 `api_server.py`와 `init_db.py`가
+  없다. 임무 종료 endpoint와 VLM `detection_id` 연결은 최신 서버 소스 및
+  FastAPI `openapi.json`을 받은 뒤 확정한다. Desktop의 기존 `vlm.py`는
+  체크리스트에서 설명한 DB/API 통합본이 아니다.
+- `h753_can_odom` 전체 단위시험 `125 passed`와 symlink-install 빌드를 통과했다.
+  ACK schema migration 회귀를 포함한 mission core 시험은 `9 passed`다.
+
+### 2026-09-07: 서버 최종 회신 검토 및 Jetson 통합 개발계획 수립
+
+- 사용자 결정으로 1차 DB/GUI 범위를 단순화했다. 필수 위치 데이터는 로봇이
+  지나온 경로와 사람 탐지 당시의 로봇 `x, y, yaw`뿐이다. RGB-D 사람 좌표,
+  최적 안전 귀환경로, 장기 동일인 추적, 서버 단절 후 자동 복구, ID 기반 엄격한
+  주행 해제는 현재 개발·완료 기준에서 제외한다. 주행 재개는 기존처럼 VLM 판단
+  완료 후 `/vlm/injury_stop=0`을 사용하는 방식을 유지한다.
+
+- 서버의 `SERVER_TEAM_통합체크리스트_회신_260904.md`와 추가 메모를 읽었다.
+  이후 전달받은 `Yooourimmm/jjproject_archive` 원격을 직접 확인한 결과 실제
+  기본 branch는 `jjproject_10_260904`, HEAD는
+  `461f9045bb72559937d3530ecec7d5c11a4d6f8f`였다. 회신에 적힌
+  `integration-checklist-fixes-260904` / `6a52809` ref는 원격에서 확인되지 않아
+  실제 HEAD 소스를 통합 기준으로 사용했다.
+- 서버는 mission 종료 PATCH, idempotency 충돌 409, 이미지 checksum 중복 방지,
+  request size 413, 연결별 SQLite FK, detection 시 victim 영속 생성, ACTIVE mission
+  복구와 VLM result detail ID 필드를 구현했다고 보고했다.
+- 회신 보관본에 실제 API key가 평문으로 포함된 것을 확인했다. 해당 값은 노출된
+  것으로 처리해 서버에서 폐기·재발급하고 문서에서 제거하기 전에는 Git에
+  포함하지 않는다.
+- 로컬 회신 보관본의 평문 key는 삭제하고 폐기·재발급 필요 문구로 교체했으며,
+  `.env`, `.jjproject_env`, 운영 DB와 mission 파일을 `.gitignore`에 추가했다.
+  서버 환경에
+  설정된 기존 key 자체의 폐기와 새 값 발급은 서버 PC 담당 작업으로 남는다.
+- ID 소유권은 원래 계획대로 `robot_id=h753_jetson_01`, mission/detection ID는
+  Jetson, victim ID는 서버가 생성하는 기준으로 결정했다. 서버가 제안한 방식 중
+  Jetson 발급 ID를 서버 VLM이 사용하는 B안을 채택한다.
+- `JETSON_SERVER_INTEGRATION_DEVELOPMENT_PLAN_20260907.md`를 새로 작성했다.
+  보안 조치, API 계약시험, outbox 영구 오류 격리, 임무 상태 호환,
+  detection/VLM correlation, 네트워크, 비하드웨어 및 실제 Mode 4 시험과 완료
+  기준을 Phase 0~7로 정리했다.
+- 실제 서버 API에 맞춰 Jetson uploader 계약을 수정했다. 지도는
+  `yaml_file/pgm_file`, 탐지 이미지는 `file/checksum` multipart만 보내며,
+  mission/route/detection/PATCH JSON도 서버 모델에 없는 로컬 필드를 제거한다.
+  서버 ACK의 mission/detection/map ID와 이미지 checksum이 요청과 다르면 성공으로
+  처리하지 않는다.
+- HTTP 네트워크 오류, `408/425/429/5xx`는 backoff 재시도하고,
+  `400/401/403/404/409/413` 및 로컬 파일 유실·계약 불일치는 `BLOCKED`로 격리한다.
+  `/mission/upload/status`에 blocked 수, retry 가능 여부와 HTTP status를 표시하고,
+  설정 수정 후 `ros2 service call /mission/upload/retry_blocked
+  std_srvs/srv/Trigger '{}'`로 명시적으로 재등록할 수 있게 했다.
+- 지도 revision이 바뀔 때 로컬 종료 원인은 `MAP_CHANGED`로 보존하되 서버에는 허용
+  상태인 `ABORTED`를 보낸다. 탐지 업로드 전에 해당 `route_end_seq`까지의 경로가
+  먼저 ACK되며, 미전송/차단 경로가 있으면 mission 종료 PATCH도 기다린다.
+- Jetson 로컬 이미지 ID와 서버가 발급한 이미지 ID는 checksum과 outbox
+  `ack_json`으로 연결한다. 서버가 Jetson ID를 그대로 받지 않는 현재 계약에서
+  중복 이미지 생성은 checksum idempotency로 막는다.
+- `/mission/detection_event`에 `robot_id`를 추가하고 gateway가 최신
+  `mission_id/detection_id`를 active context로 추적하도록 했다. 새
+  `/vlm/decision` JSON 수신 경로는 ID 불일치·만료·schema 불일치 clear를 거부한다.
+  `require_correlated_decision=true`에서는 기존 ID 없는 `/vlm/injury_stop=0`도
+  거부한다. 실제 서버가 아직 이 계약을 발행하지 않으므로 기본값은 호환 모드인
+  `false`이고, 서버 수정·시험 후에만 전환한다.
+- 신규 계약·영구 오류·migration 회귀를 포함한 `h753_can_odom` 전체 시험
+  `138 passed`, Python 문법 검사와 symlink-install 빌드를 통과했다. 실제 서버
+  IP와 새 API key가 없어 네트워크 end-to-end 시험은 아직 수행하지 않았다.
+- 서버 원격의 10개 branch와 실제 HEAD 소스를 다시 확인했다. 실제 사람 좌표와
+  최적 안전 귀환경로, ID 기반 엄격 해제의 완성 구현은 없었다. 서버 단절 대응은
+  `pending_route_points` 메모리 재시도만 있어 프로세스 재시작을 견디는 복구 기능은
+  아니다. 현재 필요한 서버 작업만 다시 정리한
+  `SERVER_PC_DB_VLM_GUI_DEVELOPMENT_REQUEST_20260907.md`를 만들었으며, 이 파일을
+  서버 담당자에게 전달할 최신 단일 기준으로 지정했다. 서버 작업은 Jetson
+  mission/detection ID 사용, VLM assessment·구호물품 연결, 실제 업로드 데이터의
+  GUI 표시와 정상 연결 통합시험으로 제한한다.
+- 기존 Notion 기록용 TXT는 이전 기록 보관본으로 유지하고,
+  `DB_개발현황_서버연동_노션기록_20260907.md`를 최신본으로 작성했다. 날짜별
+  구현 내역, 서버 원격 확인 결과, 현재 S1~S6 작업, 제외 범위와 완료 체크리스트를
+  Notion에서 바로 구분할 수 있는 Markdown 제목·표·체크박스 형식으로 통합했다.
 
 지도만 화면에 표시하는 비하드웨어 시험:
 
