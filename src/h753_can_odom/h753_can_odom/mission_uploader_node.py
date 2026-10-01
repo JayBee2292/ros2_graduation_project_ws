@@ -133,7 +133,10 @@ class MissionUploaderNode(Node):
                 timeout_s=self.request_timeout_s,
                 allow_insecure_http=self.allow_insecure_http,
             )
-        self.executor = ThreadPoolExecutor(
+        # rclpy.Node already exposes an `executor` property (with a setter
+        # that expects a rclpy Executor), so the upload worker pool needs a
+        # distinct attribute name to avoid AttributeError on assignment.
+        self.upload_executor = ThreadPoolExecutor(
             max_workers=1,
             thread_name_prefix='mission-upload',
         )
@@ -174,7 +177,7 @@ class MissionUploaderNode(Node):
             )
 
     def destroy_node(self) -> bool:
-        self.executor.shutdown(wait=False, cancel_futures=True)
+        self.upload_executor.shutdown(wait=False, cancel_futures=True)
         self.store.close()
         return super().destroy_node()
 
@@ -219,7 +222,10 @@ class MissionUploaderNode(Node):
         if self.client is None:
             return
         self.active_job = UploadJob(kind='event', event=event)
-        self.future = self.executor.submit(self.client.upload_event, event)
+        self.future = self.upload_executor.submit(
+            self.client.upload_event,
+            event,
+        )
 
     def _start_route_job(
         self,
@@ -234,7 +240,7 @@ class MissionUploaderNode(Node):
             mission_id=mission_id,
             points=immutable_points,
         )
-        self.future = self.executor.submit(
+        self.future = self.upload_executor.submit(
             self.client.upload_route_batch,
             mission_id,
             list(immutable_points),

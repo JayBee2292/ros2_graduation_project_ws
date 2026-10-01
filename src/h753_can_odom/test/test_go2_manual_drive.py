@@ -22,7 +22,7 @@ def test_manual_drive_requires_fresh_deadman_without_latches():
     assert not manual_drive_enabled(True, True, False, True)
 
 
-def test_go2_manual_drive_uses_existing_75_to_100_turn_mix():
+def test_go2_manual_drive_uses_50_to_100_turn_mix():
     linear_mps, angular_radps = joystick_axes_to_drive_twist(
         axes=[0.0, -1.0, 0.0, 1.0],
         left_stick_y_axis=1,
@@ -31,13 +31,13 @@ def test_go2_manual_drive_uses_existing_75_to_100_turn_mix():
         max_linear_mps=0.60,
         max_angular_radps=2.67,
         track_gauge_m=0.45,
-        moving_inner_ratio=0.75,
+        moving_inner_ratio=0.50,
     )
     left_mps = linear_mps - angular_radps * 0.45 / 2.0
     right_mps = linear_mps + angular_radps * 0.45 / 2.0
 
     assert abs(left_mps - 0.60) < 1e-9
-    assert abs(right_mps - 0.45) < 1e-9
+    assert abs(right_mps - 0.30) < 1e-9
 
 
 def test_missing_axes_produce_stop_instead_of_index_error():
@@ -49,7 +49,7 @@ def test_missing_axes_produce_stop_instead_of_index_error():
         max_linear_mps=0.60,
         max_angular_radps=2.67,
         track_gauge_m=0.45,
-        moving_inner_ratio=0.75,
+        moving_inner_ratio=0.50,
     )
 
     assert linear_mps == 0.0

@@ -137,10 +137,37 @@ def apply_track_stiction_floor(
         if peak_scaled_mps <= max_track_speed_mps:
             left_mps = scaled_left_mps
             right_mps = scaled_right_mps
+        elif left_mps * right_mps > 0.0:
+            # With both tracks moving in the same direction, a requested
+            # inner:outer ratio below min_pwm/100 cannot retain its curvature:
+            # independently flooring both tracks can turn a tight arc into a
+            # straight command or a much larger circle. Keep the faster outer
+            # track above breakaway and stop the slower inner track instead.
+            # Exact zero is intentional and gives Nav2 a predictable
+            # single-track pivot through sharp corners.
+            if abs(left_mps) < abs(right_mps):
+                left_mps = 0.0
+                right_mps = math.copysign(
+                    clamp(
+                        abs(right_mps),
+                        min_track_speed_mps,
+                        max_track_speed_mps,
+                    ),
+                    right_mps,
+                )
+            else:
+                right_mps = 0.0
+                left_mps = math.copysign(
+                    clamp(
+                        abs(left_mps),
+                        min_track_speed_mps,
+                        max_track_speed_mps,
+                    ),
+                    left_mps,
+                )
         else:
-            # A ratio below min_pwm/100 cannot simultaneously retain its
-            # curvature and keep both tracks inside 0..100% PWM. Clamp to the
-            # nearest physically achievable track pair in that edge case.
+            # Counter-rotating tracks cannot use a stationary inner track.
+            # Clamp each non-zero side to the physically usable PWM range.
             def clamp_moving_track(track_mps: float) -> float:
                 if track_mps == 0.0:
                     return 0.0

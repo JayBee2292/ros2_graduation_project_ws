@@ -11,6 +11,7 @@ from typing import Any
 from uuid import uuid4
 
 import rclpy
+from action_msgs.msg import GoalStatusArray
 from geometry_msgs.msg import PoseStamped
 from nav_msgs.msg import Path
 from rclpy.executors import ExternalShutdownException
@@ -31,6 +32,7 @@ from h753_can_odom.mission_data_core import (
     DetectionEventGate,
     MapManifest,
     MissionStore,
+    NavigationMissionTracker,
     PoseSample,
     decide_route_sample,
     quaternion_to_yaw,
@@ -85,6 +87,19 @@ class MissionDataRecorderNode(Node):
         self.declare_parameter('map_frame_id', 'map')
         self.declare_parameter('base_frame_id', 'base_link')
         self.declare_parameter('mode_topic', '/robot_mode')
+        self.declare_parameter(
+            'navigation_status_topic',
+            '/navigate_to_pose/_action/status',
+        )
+        self.declare_parameter(
+            'navigate_through_poses_status_topic',
+            '/navigate_through_poses/_action/status',
+        )
+        self.declare_parameter(
+            'follow_waypoints_status_topic',
+            '/follow_waypoints/_action/status',
+        )
+        self.declare_parameter('complete_on_navigation_result', True)
         self.declare_parameter('active_modes', [3, 4])
         self.declare_parameter('detection_modes', [4])
         self.declare_parameter('auto_start_mission', True)
@@ -142,6 +157,9 @@ class MissionDataRecorderNode(Node):
         }
         self.auto_start_mission = bool(
             self.get_parameter('auto_start_mission').value
+        )
+        self.complete_on_navigation_result = bool(
+            self.get_parameter('complete_on_navigation_result').value
         )
         self.sample_rate_hz = float(
             self.get_parameter('sample_rate_hz').value
@@ -216,6 +234,8 @@ class MissionDataRecorderNode(Node):
         self.last_tf_error = ''
         self.last_tf_warning_at = 0.0
         self.last_detection_id: str | None = None
+        self.navigation_mission_tracker = NavigationMissionTracker()
+        self.awaiting_navigation_goal = False
 
         self.person_topic = str(self.get_parameter('person_topic').value)
         self.blue_person_topic = str(
@@ -267,6 +287,29 @@ class MissionDataRecorderNode(Node):
             self._mode_callback,
             latched_qos,
         )
+        navigation_status_topics = {
+            'navigate_to_pose': str(
+                self.get_parameter('navigation_status_topic').value
+            ),
+            'navigate_through_poses': str(
+                self.get_parameter(
+                    'navigate_through_poses_status_topic'
+                ).value
+            ),
+            'follow_waypoints': str(
+                self.get_parameter('follow_waypoints_status_topic').value
+            ),
+        }
+        for source, topic in navigation_status_topics.items():
+            self.create_subscription(
+                GoalStatusArray,
+                topic,
+                lambda msg, source=source: self._navigation_status_callback(
+                    source,
+                    msg,
+                ),
+                10,
+            )
         self.create_subscription(
             Int32,
             self.person_topic,
@@ -343,13 +386,91 @@ class MissionDataRecorderNode(Node):
     def _mode_callback(self, msg: UInt8) -> None:
         self.current_mode = int(msg.data)
         self.recording_enabled = self.current_mode in self.active_modes
+        if self.current_mode != 4:
+            self.navigation_mission_tracker.reset()
+            self.awaiting_navigation_goal = False
         if (
             self.recording_enabled
             and self.auto_start_mission
             and self.current_mission_id is None
+            and self._mission_auto_start_allowed()
         ):
             self._ensure_mission()
         self._publish_status()
+
+    def _mission_auto_start_allowed(self) -> bool:
+        return not (
+            self.current_mode == 4 and self.awaiting_navigation_goal
+        )
+
+    @staticmethod
+    def _navigation_goal_id(status: Any) -> str:
+        return bytes(status.goal_info.goal_id.uuid).hex()
+
+    @staticmethod
+    def _navigation_goal_stamp_ns(status: Any) -> int:
+        stamp = status.goal_info.stamp
+        return stamp_to_ns(stamp.sec, stamp.nanosec)
+
+    def _navigation_status_callback(
+        self,
+        source: str,
+        msg: GoalStatusArray,
+    ) -> None:
+        if not self.complete_on_navigation_result or self.current_mode != 4:
+            return
+
+        statuses = sorted(
+            msg.status_list,
+            key=self._navigation_goal_stamp_ns,
+        )
+        for status in statuses:
+            transition = self.navigation_mission_tracker.observe(
+                source,
+                self._navigation_goal_id(status),
+                int(status.status),
+            )
+            if transition is None:
+                continue
+            if transition.event == 'started':
+                if self.current_mission_id is None:
+                    self._ensure_mission()
+                self.awaiting_navigation_goal = False
+                self.get_logger().info(
+                    'Navigation route linked to mission: '
+                    f'{transition.source}/{transition.goal_id}'
+                )
+            elif transition.event == 'promoted':
+                self.awaiting_navigation_goal = False
+                self.get_logger().info(
+                    'Navigation mission owner promoted to parent route: '
+                    f'{transition.source}/{transition.goal_id}'
+                )
+            elif transition.event == 'replaced':
+                self._finish_current_mission(
+                    status='ABORTED',
+                    end_reason='NAVIGATION_GOAL_REPLACED',
+                )
+                self._ensure_mission()
+                self.awaiting_navigation_goal = False
+                self.get_logger().warn(
+                    'Navigation route replaced; started a new mission: '
+                    f'{transition.source}/{transition.goal_id}'
+                )
+            elif transition.event == 'succeeded':
+                self._finish_current_mission(
+                    status='COMPLETED',
+                    end_reason='NAVIGATION_GOAL_SUCCEEDED',
+                )
+            elif transition.event in ('canceled', 'aborted'):
+                self._finish_current_mission(
+                    status='ABORTED',
+                    end_reason=(
+                        'NAVIGATION_GOAL_CANCELED'
+                        if transition.event == 'canceled'
+                        else 'NAVIGATION_GOAL_ABORTED'
+                    ),
+                )
 
     def _ensure_mission(self, force_new: bool = False) -> bool:
         now_ns = self.get_clock().now().nanoseconds
@@ -390,6 +511,11 @@ class MissionDataRecorderNode(Node):
 
     def _route_timer(self) -> None:
         if not self.recording_enabled:
+            return
+        if (
+            self.current_mission_id is None
+            and not self._mission_auto_start_allowed()
+        ):
             return
         if self.current_mission_id is None and not self._ensure_mission():
             if self.current_mission_id is None:
@@ -493,6 +619,12 @@ class MissionDataRecorderNode(Node):
             )
             return
         if self.current_mission_id is None:
+            if not self._mission_auto_start_allowed():
+                self.get_logger().warn(
+                    'Ignored YOLO event after mission completion while '
+                    'waiting for the next navigation goal'
+                )
+                return
             self._ensure_mission()
         detected_at_ns = self.get_clock().now().nanoseconds
         sample = self._record_current_pose(force=True)
@@ -690,22 +822,45 @@ class MissionDataRecorderNode(Node):
         _request: Trigger.Request,
         response: Trigger.Response,
     ) -> Trigger.Response:
-        ended = self.store.end_active_mission(
-            self.get_clock().now().nanoseconds
+        ended = self._finish_current_mission(
+            status='COMPLETED',
+            end_reason='OPERATOR_REQUESTED',
         )
         if ended is None:
             response.success = False
             response.message = 'No active mission'
             return response
-        self.current_mission_id = None
-        self.last_sample = None
-        self.last_route_seq = -1
-        self.segment_id = 0
         response.success = True
         response.message = f'Ended mission {ended}'
         self._publish_path()
         self._publish_status()
         return response
+
+    def _finish_current_mission(
+        self,
+        status: str,
+        end_reason: str,
+    ) -> str | None:
+        ended = self.store.end_active_mission(
+            self.get_clock().now().nanoseconds,
+            status=status,
+            end_reason=end_reason,
+        )
+        if ended is None:
+            return None
+        self.current_mission_id = None
+        self.last_sample = None
+        self.last_route_seq = -1
+        self.segment_id = 0
+        self.last_record_monotonic = None
+        self.path_dirty = True
+        self.awaiting_navigation_goal = self.current_mode == 4
+        self._publish_path()
+        self._publish_status()
+        self.get_logger().info(
+            f'Ended mission {ended}: {status}/{end_reason}'
+        )
+        return ended
 
     def _path_timer(self) -> None:
         if not self.path_dirty:
@@ -768,6 +923,13 @@ class MissionDataRecorderNode(Node):
             'tf_error': self.last_tf_error,
             'pending_images': len(self.pending_images),
             'pending_detection_pose': self.pending_pose_event is not None,
+            'navigation_goal_id': (
+                self.navigation_mission_tracker.active_goal_id
+            ),
+            'navigation_source': (
+                self.navigation_mission_tracker.active_source
+            ),
+            'awaiting_navigation_goal': self.awaiting_navigation_goal,
             'pending': self.store.pending_counts(),
             'database_path': str(self.database_path),
         }

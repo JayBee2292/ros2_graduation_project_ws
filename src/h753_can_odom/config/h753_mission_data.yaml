@@ -13,6 +13,16 @@ h753_mission_data_recorder:
     base_frame_id: base_link
 
     mode_topic: /robot_mode
+    # Standalone goals complete on NavigateToPose. Multi-point routes are
+    # owned by their parent action so internal per-waypoint NavigateToPose
+    # successes never split one route into multiple missions.
+    navigation_status_topic: /navigate_to_pose/_action/status
+    navigate_through_poses_status_topic: /navigate_through_poses/_action/status
+    follow_waypoints_status_topic: /follow_waypoints/_action/status
+    # A top-level Nav2 route result owns the mission boundary in Mode 4.
+    # SUCCEEDED closes the mission as COMPLETED; canceled/aborted routes close
+    # it as ABORTED.
+    complete_on_navigation_result: true
     # Mode 3 records localization/manual takeover paths. Mode 4 additionally
     # records YOLO victim events. Mode 5 has no map-frame localization.
     active_modes: [3, 4]
@@ -57,10 +67,12 @@ h753_mission_data_recorder:
 h753_mission_uploader:
   ros__parameters:
     database_path: /home/jyl1015/.ros/h753_mission/mission_outbox.db
-    # Empty keeps all records in the durable Jetson outbox. Set this after the
-    # server implements the API contract in the development plan.
-    api_base_url: ""
-    allow_insecure_http: false
+    # 2026-09-08 server handoff: Jetson eno1 and the API server share the
+    # 192.168.0.0/24 wired LAN. Keep credentials in the environment, not here.
+    api_base_url: "http://192.168.0.117:8000"
+    # The current integration server exposes HTTP on the isolated development
+    # LAN. Change this back to false when HTTPS/VPN termination is introduced.
+    allow_insecure_http: true
     # The server checklist uses X-API-Key. Read its value from the process
     # environment and never store the credential itself in ROS YAML.
     api_key_environment: H753_MISSION_API_KEY

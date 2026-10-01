@@ -36,6 +36,9 @@ def generate_launch_description():
     nav2_params = LaunchConfiguration('nav2_params')
     nav2_bond_timeout = LaunchConfiguration('nav2_bond_timeout')
     nav_to_pose_bt_xml = LaunchConfiguration('nav_to_pose_bt_xml')
+    nav_through_poses_bt_xml = LaunchConfiguration(
+        'nav_through_poses_bt_xml'
+    )
     navigation_start_delay_s = LaunchConfiguration(
         'navigation_start_delay_s'
     )
@@ -83,6 +86,17 @@ def generate_launch_description():
                 / 'navigate_to_pose_w_replanning_0_5hz.xml'
             ),
             description='NavigateToPose BT with reduced global replanning load.',
+        ),
+        DeclareLaunchArgument(
+            'nav_through_poses_bt_xml',
+            default_value=str(
+                h753_share
+                / 'behavior_trees'
+                / 'navigate_through_poses_replan_if_invalid.xml'
+            ),
+            description=(
+                'NavigateThroughPoses BT that keeps sharp-turn paths stable.'
+            ),
         ),
         DeclareLaunchArgument(
             'collision_monitor_params',
@@ -169,6 +183,13 @@ def generate_launch_description():
                             name='default_nav_to_pose_bt_xml',
                             value=ParameterValue(
                                 nav_to_pose_bt_xml,
+                                value_type=str,
+                            ),
+                        ),
+                        SetParameter(
+                            name='default_nav_through_poses_bt_xml',
+                            value=ParameterValue(
+                                nav_through_poses_bt_xml,
                                 value_type=str,
                             ),
                         ),

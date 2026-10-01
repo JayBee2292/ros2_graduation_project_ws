@@ -7,6 +7,8 @@ from h753_can_odom.mission_data_core import (
     DetectionEventGate,
     MapManifest,
     MissionStore,
+    NavigationGoalTracker,
+    NavigationMissionTracker,
     PoseSample,
     decide_route_sample,
 )
@@ -14,6 +16,69 @@ from h753_can_odom.mission_data_core import (
 
 WORKSPACE_DIR = Path(__file__).resolve().parents[3]
 GO2_MAP_YAML = WORKSPACE_DIR / 'maps' / 'go2' / 'go2_map.yaml'
+
+
+def test_navigation_goal_tracker_emits_each_terminal_result_once() -> None:
+    tracker = NavigationGoalTracker()
+
+    assert tracker.observe('goal-a', 1).event == 'started'
+    assert tracker.observe('goal-a', 2) is None
+    succeeded = tracker.observe('goal-a', 4)
+
+    assert succeeded is not None
+    assert succeeded.event == 'succeeded'
+    assert tracker.active_goal_id is None
+    assert tracker.observe('goal-a', 4) is None
+
+
+def test_navigation_goal_tracker_distinguishes_failure_and_replacement() -> None:
+    tracker = NavigationGoalTracker()
+
+    tracker.observe('goal-a', 2)
+    replaced = tracker.observe('goal-b', 1)
+
+    assert replaced is not None
+    assert replaced.event == 'replaced'
+    assert replaced.previous_goal_id == 'goal-a'
+    aborted = tracker.observe('goal-b', 6)
+    assert aborted is not None
+    assert aborted.event == 'aborted'
+
+
+def test_any_number_of_waypoint_children_complete_one_mission_at_end() -> None:
+    for waypoint_count in (1, 2, 4, 10, 25):
+        tracker = NavigationMissionTracker()
+        route_id = f'route-{waypoint_count}'
+
+        started = tracker.observe('follow_waypoints', route_id, 1)
+        assert started is not None and started.event == 'started'
+
+        for index in range(waypoint_count):
+            child_id = f'{route_id}-waypoint-{index}'
+            assert tracker.observe('navigate_to_pose', child_id, 1) is None
+            assert tracker.observe('navigate_to_pose', child_id, 4) is None
+            assert tracker.active_source == 'follow_waypoints'
+            assert tracker.active_goal_id == route_id
+
+        completed = tracker.observe('follow_waypoints', route_id, 4)
+        assert completed is not None
+        assert completed.event == 'succeeded'
+        assert tracker.active_source is None
+
+
+def test_parent_route_promotes_racy_first_child_without_new_mission() -> None:
+    tracker = NavigationMissionTracker()
+
+    child = tracker.observe('navigate_to_pose', 'waypoint-0', 1)
+    assert child is not None and child.event == 'started'
+    parent = tracker.observe('follow_waypoints', 'route-a', 1)
+
+    assert parent is not None
+    assert parent.event == 'promoted'
+    assert parent.previous_source == 'navigate_to_pose'
+    assert tracker.active_source == 'follow_waypoints'
+    assert tracker.observe('navigate_to_pose', 'waypoint-0', 4) is None
+    assert tracker.observe('follow_waypoints', 'route-a', 4).event == 'succeeded'
 
 
 def test_amcl_manifest_captures_map_revision_and_pixel_metadata() -> None:

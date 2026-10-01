@@ -43,6 +43,9 @@ def generate_launch_description():
     rviz_config = LaunchConfiguration('rviz_config')
     nav2_bond_timeout = LaunchConfiguration('nav2_bond_timeout')
     nav_to_pose_bt_xml = LaunchConfiguration('nav_to_pose_bt_xml')
+    nav_through_poses_bt_xml = LaunchConfiguration(
+        'nav_through_poses_bt_xml'
+    )
     collision_monitor_start_delay_s = LaunchConfiguration(
         'collision_monitor_start_delay_s'
     )
@@ -117,6 +120,17 @@ def generate_launch_description():
             description='NavigateToPose BT with reduced global replanning load.',
         ),
         DeclareLaunchArgument(
+            'nav_through_poses_bt_xml',
+            default_value=str(
+                h753_share
+                / 'behavior_trees'
+                / 'navigate_through_poses_replan_if_invalid.xml'
+            ),
+            description=(
+                'NavigateThroughPoses BT that keeps sharp-turn paths stable.'
+            ),
+        ),
+        DeclareLaunchArgument(
             'collision_monitor_params',
             default_value=str(h753_share / 'config' / 'h753_collision_monitor.yaml'),
         ),
@@ -175,6 +189,13 @@ def generate_launch_description():
                 SetParameter(
                     name='default_nav_to_pose_bt_xml',
                     value=ParameterValue(nav_to_pose_bt_xml, value_type=str),
+                ),
+                SetParameter(
+                    name='default_nav_through_poses_bt_xml',
+                    value=ParameterValue(
+                        nav_through_poses_bt_xml,
+                        value_type=str,
+                    ),
                 ),
                 IncludeLaunchDescription(
                     PythonLaunchDescriptionSource(

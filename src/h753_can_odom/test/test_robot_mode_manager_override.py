@@ -171,36 +171,36 @@ def test_planar_limit_caps_in_place_rotation():
     assert limited.angular.z == -0.35
 
 
-def test_full_joystick_steer_uses_75_to_100_track_ratio():
+def test_full_joystick_steer_uses_50_to_100_track_ratio():
     linear_mps, angular_radps = joystick_to_drive_twist(
         throttle=1.0,
         steer=1.0,
         max_linear_mps=0.60,
         max_angular_radps=2.67,
         track_gauge_m=0.45,
-        moving_inner_ratio=0.75,
+        moving_inner_ratio=0.50,
     )
     left_mps = linear_mps - angular_radps * 0.45 / 2.0
     right_mps = linear_mps + angular_radps * 0.45 / 2.0
 
     assert abs(left_mps - 0.60) < 1e-9
-    assert abs(right_mps - 0.45) < 1e-9
+    assert abs(right_mps - 0.30) < 1e-9
 
 
-def test_half_joystick_steer_uses_87_5_to_100_track_ratio():
+def test_half_joystick_steer_uses_75_to_100_track_ratio():
     linear_mps, angular_radps = joystick_to_drive_twist(
         throttle=1.0,
         steer=0.5,
         max_linear_mps=0.60,
         max_angular_radps=2.67,
         track_gauge_m=0.45,
-        moving_inner_ratio=0.75,
+        moving_inner_ratio=0.50,
     )
     left_mps = linear_mps - angular_radps * 0.45 / 2.0
     right_mps = linear_mps + angular_radps * 0.45 / 2.0
 
     assert abs(left_mps - 0.60) < 1e-9
-    assert abs(right_mps - 0.525) < 1e-9
+    assert abs(right_mps - 0.45) < 1e-9
 
 
 def test_mode_2_always_starts_a_new_map_even_when_posegraph_exists():

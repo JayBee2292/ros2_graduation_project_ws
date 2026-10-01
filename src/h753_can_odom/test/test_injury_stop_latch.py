@@ -153,6 +153,40 @@ def test_curve_floor_preserves_track_ratio():
     assert right_mps <= 0.60
 
 
+def test_tight_curve_uses_single_track_pivot_instead_of_straightening():
+    linear_mps, angular_radps = apply_track_stiction_floor(
+        0.10,
+        0.30,
+        track_gauge_m=0.45,
+        max_track_speed_mps=0.60,
+        min_track_pwm_percent=50.0,
+        track_zero_deadband_mps=0.01,
+    )
+    left_mps = linear_mps - angular_radps * 0.45 / 2.0
+    right_mps = linear_mps + angular_radps * 0.45 / 2.0
+
+    assert abs(left_mps) < 1e-9
+    assert abs(right_mps - 0.30) < 1e-9
+    assert angular_radps > 0.0
+
+
+def test_reverse_tight_curve_keeps_requested_turn_direction():
+    linear_mps, angular_radps = apply_track_stiction_floor(
+        -0.10,
+        0.30,
+        track_gauge_m=0.45,
+        max_track_speed_mps=0.60,
+        min_track_pwm_percent=50.0,
+        track_zero_deadband_mps=0.01,
+    )
+    left_mps = linear_mps - angular_radps * 0.45 / 2.0
+    right_mps = linear_mps + angular_radps * 0.45 / 2.0
+
+    assert abs(left_mps + 0.30) < 1e-9
+    assert abs(right_mps) < 1e-9
+    assert angular_radps > 0.0
+
+
 def test_exact_stop_and_stationary_inner_track_remain_zero():
     assert apply_track_stiction_floor(
         0.0,

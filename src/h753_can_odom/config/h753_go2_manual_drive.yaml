@@ -13,8 +13,8 @@ h753_go2_manual_drive:
     max_linear_mps: 0.60
     max_angular_radps: 2.67
     track_gauge_m: 0.45
-    # Full moving steer commands inner:outer track speed = 75:100.
-    moving_inner_ratio: 0.75
+    # Full moving steer commands inner:outer track speed = 50:100.
+    moving_inner_ratio: 0.50
     left_stick_y_axis: 1
     right_stick_x_axis: 3
     deadman_button: 4

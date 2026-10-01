@@ -449,7 +449,7 @@ class RobotModeManagerNode(Node):
         self.declare_parameter('mapping_max_linear_mps', 0.60)
         self.declare_parameter('mapping_max_angular_radps', 2.67)
         self.declare_parameter('track_gauge_m', 0.45)
-        self.declare_parameter('moving_inner_ratio', 0.75)
+        self.declare_parameter('moving_inner_ratio', 0.50)
         self.declare_parameter('left_stick_y_axis', 1)
         self.declare_parameter('right_stick_x_axis', 3)
         self.declare_parameter('dpad_y_axis', 7)

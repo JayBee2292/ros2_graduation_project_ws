@@ -1,6 +1,6 @@
 # H753 궤도형 AMR 개발 기록 및 인수인계
 
-최종 갱신: 2026-09-07
+최종 갱신: 2026-10-01
 
 이 문서는 프로젝트 개발 기록의 단일 기준 문서다. 현재 동작 상태와 주요 개발
 흐름만 유지하며, 과거의 폐기된 추정은 기록하지 않는다.
@@ -42,7 +42,7 @@ h753_mission_data_recorder (보드, mode 3/4)
   -> ~/.ros/h753_mission/mission_outbox.db + 대표 이미지
 
 h753_mission_uploader (보드, mode 3/4)
-  -> 서버 mission API (현재 URL 미설정: Jetson outbox에 안전 보관)
+  -> 서버 mission API (`http://192.168.0.117:8000`, API key는 환경 변수)
   -> /mission/upload/status
 ```
 
@@ -1056,6 +1056,55 @@ ros2 run h753_can_odom imu_vibration_analysis \
   `DB_개발현황_서버연동_노션기록_20260907.md`를 최신본으로 작성했다. 날짜별
   구현 내역, 서버 원격 확인 결과, 현재 S1~S6 작업, 제외 범위와 완료 체크리스트를
   Notion에서 바로 구분할 수 있는 Markdown 제목·표·체크박스 형식으로 통합했다.
+
+### 2026-09-08: 서버 S1~S6 코드 교차검증과 LAN API 설정
+
+- 서버 GitHub 기본 branch `jjproject_11_260907`, 원격 HEAD `98107ba`, S1~S5
+  commit `bde415e`를 확인했다. 서버 보고의 로컬 commit `86e88fb`와 `8550c24`는
+  공개 스냅샷 계보에는 없으므로 이후에는 원격 commit을 기준으로 대조한다.
+- 자체 mission/detection 발급과 route sampler 제거, Jetson detection event 수신,
+  assessment·supplies 연결, GUI의 탐지 시각·로봇 pose 표시가 실제 코드에 반영됐다.
+  S6 파일에는 21개 test가 있고 변경 Python 파일은 정적 문법 검사를 통과했다.
+  다만 Jetson에는 서버 전용 FastAPI/VLM Python 의존성이 없어 21건을 이 PC에서
+  재실행하지는 못했다.
+- 서버 보완 권장사항은 detection event 구독의 transient-local QoS 적용,
+  event schema와 mission 일치 검증, CONFIRMED `injury_stop 1→0` 자동시험,
+  result detail의 서버 TF 좌표 제거, detection row 5초 지연 시 assessment 유실
+  확인이다. 따라서 서버 기능은 대부분 완료됐지만 실제 로봇 연동 전 소규모
+  보완과 확인이 남아 있다.
+- Jetson `eno1=192.168.0.75/24`와 같은 대역의 서버 LAN 주소를 선택해
+  `h753_mission_data.yaml`의 `api_base_url`을
+  `http://192.168.0.117:8000`, `allow_insecure_http=true`로 설정했다. API key는
+  YAML에 기록하지 않았다.
+- LAN과 Tailscale 양쪽 `/api/v1/health`는 점검 시점에 모두 connection refused였다.
+  서버 API 프로세스를 먼저 기동해야 한다. 현재 Jetson 프로세스 환경에도
+  `H753_MISSION_API_KEY`가 설정되지 않았다.
+- URL 설정 후 Jetson `h753_can_odom` 전체 단위시험은 `138 passed`다.
+
+### 2026-10-01: 안정 주행본과 단일 임무 완료 경계 확정
+
+- 클로즈드루프 PID가 요청한 `50:100` 조향비를 그대로 추종하도록
+  Xbox 전진 조향의 `moving_inner_ratio`를 `0.50`으로 통일했다.
+- PWM 50% 이하에서 안쪽 궤도가 정지마찰을 넘지 못하여 회전반경이
+  커지는 구간은 안쪽 궤도를 정지시키고 바깥 궤도로 pivot하도록 보정했다.
+- `NavigateThroughPoses`는 경로가 유효한 동안 재계산하지 않는 전용 BT를
+  사용한다. 통과한 경유지는 `0.4 m` 반경으로 제거하여 급회전 구간의
+  경로 출렁과 회전 shim 재진입을 줄였다.
+- 180도 정반대 out-and-back 경유지는 `FollowWaypoints`를 운용 기준으로
+  한다. 중간 경유지의 일시 정지는 waypoint follower의 정상 동작이다.
+- 로봇이 추가한 전체 경유지를 하나의 임무로 본다. `FollowWaypoints`나
+  `NavigateThroughPoses`의 자식 `NavigateToPose` 성공은 임무를 끝내지 않고,
+  부모 action의 최종 `SUCCEEDED`에서만 `COMPLETED`를 전송한다. 경유지
+  개수 `1/2/4/10/25`에 대한 자식 성공 무시 시험을 추가했다.
+- 임무 종료 후에는 다음 상위 navigation goal이 시작할 때까지 새 임무나
+  YOLO 탐지 레코드를 자동 생성하지 않는다. 취소·실패는 `ABORTED`로 기록한다.
+- uploader worker pool이 `rclpy.Node.executor`와 충돌하던 이름을
+  `upload_executor`로 분리했다. API key는 계속 `H753_MISSION_API_KEY`
+  환경 변수로만 주입하며 Git에 저장하지 않는다.
+- 최종 검증에서 `h753_can_odom` `146 passed`, `h753_perception` `9 passed`,
+  두 ROS 2 패키지 symlink-install 빌드를 통과했다.
+- 이전에 서버로 전송된 분할 mission 시험 데이터는 자동 병합하지 않는다.
+  운영 시험 전 서버에서 해당 테스트 레코드만 별도로 정리해야 한다.
 
 지도만 화면에 표시하는 비하드웨어 시험:
 

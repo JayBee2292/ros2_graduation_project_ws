@@ -25,6 +25,13 @@ OUTBOX_PRIORITIES = {
     'mission_end': 60,
 }
 
+NAVIGATION_GOAL_ACTIVE_STATUSES = frozenset((1, 2, 3))
+NAVIGATION_GOAL_TERMINAL_EVENTS = {
+    4: 'succeeded',
+    5: 'canceled',
+    6: 'aborted',
+}
+
 
 def normalize_angle(angle: float) -> float:
     return math.atan2(math.sin(angle), math.cos(angle))
@@ -70,6 +77,161 @@ class PoseSample:
 class RouteDecision:
     record: bool
     pose_jump: bool = False
+
+
+@dataclass(frozen=True)
+class NavigationGoalTransition:
+    event: str
+    goal_id: str
+    previous_goal_id: str | None = None
+
+
+@dataclass(frozen=True)
+class NavigationMissionTransition:
+    event: str
+    source: str
+    goal_id: str
+    previous_source: str | None = None
+    previous_goal_id: str | None = None
+
+
+class NavigationGoalTracker:
+    """Reduce repeated Nav2 action status arrays to one lifecycle event."""
+
+    def __init__(self) -> None:
+        self.active_goal_id: str | None = None
+        self._terminal_goal_ids: set[str] = set()
+
+    def reset(self) -> None:
+        self.active_goal_id = None
+
+    def observe(
+        self,
+        goal_id: str,
+        status: int,
+    ) -> NavigationGoalTransition | None:
+        if not goal_id or goal_id in self._terminal_goal_ids:
+            return None
+
+        if status in NAVIGATION_GOAL_ACTIVE_STATUSES:
+            if self.active_goal_id is None:
+                self.active_goal_id = goal_id
+                return NavigationGoalTransition('started', goal_id)
+            if self.active_goal_id == goal_id:
+                return None
+            previous = self.active_goal_id
+            self.active_goal_id = goal_id
+            return NavigationGoalTransition('replaced', goal_id, previous)
+
+        event = NAVIGATION_GOAL_TERMINAL_EVENTS.get(status)
+        if event is None or self.active_goal_id != goal_id:
+            return None
+        self.active_goal_id = None
+        self._terminal_goal_ids.add(goal_id)
+        return NavigationGoalTransition(event, goal_id)
+
+
+class NavigationMissionTracker:
+    """Track one user-visible route across nested Nav2 actions.
+
+    ``FollowWaypoints`` owns a sequence of internal ``NavigateToPose`` goals.
+    Those child results must not close the mission.  Parent route actions take
+    precedence while preserving standalone NavigateToPose behavior.
+    """
+
+    def __init__(
+        self,
+        parent_sources: Iterable[str] = (
+            'follow_waypoints',
+            'navigate_through_poses',
+        ),
+    ) -> None:
+        self.parent_sources = frozenset(parent_sources)
+        self._trackers: dict[str, NavigationGoalTracker] = {}
+        self.active_source: str | None = None
+
+    @property
+    def active_goal_id(self) -> str | None:
+        if self.active_source is None:
+            return None
+        return self._tracker(self.active_source).active_goal_id
+
+    def _tracker(self, source: str) -> NavigationGoalTracker:
+        tracker = self._trackers.get(source)
+        if tracker is None:
+            tracker = NavigationGoalTracker()
+            self._trackers[source] = tracker
+        return tracker
+
+    def reset(self) -> None:
+        self.active_source = None
+        for tracker in self._trackers.values():
+            tracker.reset()
+
+    def observe(
+        self,
+        source: str,
+        goal_id: str,
+        status: int,
+    ) -> NavigationMissionTransition | None:
+        transition = self._tracker(source).observe(goal_id, status)
+        if transition is None:
+            return None
+
+        active_is_parent = self.active_source in self.parent_sources
+        source_is_parent = source in self.parent_sources
+
+        # FollowWaypoints emits one NavigateToPose lifecycle per waypoint.
+        # Consume those child statuses for deduplication, but never expose them
+        # as mission boundaries while the parent route is active.
+        if active_is_parent and not source_is_parent:
+            return None
+
+        if transition.event in ('started', 'replaced'):
+            previous_source = self.active_source
+            previous_goal_id = self.active_goal_id
+
+            if source_is_parent and previous_source not in (None, source):
+                self._tracker(previous_source).reset()
+                self.active_source = source
+                event = (
+                    'promoted'
+                    if previous_source not in self.parent_sources
+                    else 'replaced'
+                )
+                return NavigationMissionTransition(
+                    event,
+                    source,
+                    goal_id,
+                    previous_source,
+                    previous_goal_id,
+                )
+
+            if previous_source is None:
+                self.active_source = source
+                return NavigationMissionTransition('started', source, goal_id)
+
+            if previous_source == source:
+                self.active_source = source
+                return NavigationMissionTransition(
+                    transition.event,
+                    source,
+                    goal_id,
+                    source,
+                    transition.previous_goal_id,
+                )
+
+            return None
+
+        if self.active_source != source:
+            return None
+
+        self.active_source = None
+        return NavigationMissionTransition(
+            transition.event,
+            source,
+            goal_id,
+        )
 
 
 def decide_route_sample(

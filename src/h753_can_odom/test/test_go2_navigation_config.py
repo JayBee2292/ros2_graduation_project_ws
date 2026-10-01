@@ -61,6 +61,33 @@ def test_nav_to_pose_bt_replans_at_half_hz() -> None:
     assert planner_params['expected_planner_frequency'] == 0.5
 
 
+def test_nav_through_poses_keeps_path_until_it_is_invalid() -> None:
+    bt_path = BT_DIR / 'navigate_through_poses_replan_if_invalid.xml'
+    root = ET.parse(bt_path).getroot()
+
+    remove_passed_goals = root.find('.//RemovePassedGoals')
+    replan_fallback = root.find('.//Fallback[@name="ReplanOnlyIfPathInvalid"]')
+
+    assert remove_passed_goals is not None
+    assert float(remove_passed_goals.attrib['radius']) == 0.4
+    assert replan_fallback is not None
+    assert replan_fallback.find('IsPathValid') is not None
+    assert replan_fallback.find('.//ComputePathThroughPoses') is not None
+
+
+def test_all_nav_launches_select_stable_through_poses_bt() -> None:
+    for launch_name in (
+        'go2_amcl_manual_drive_bringup.launch.py',
+        'navigation_bringup.launch.py',
+        'slam_navigation_bringup.launch.py',
+    ):
+        launch_text = (LAUNCH_DIR / launch_name).read_text(encoding='utf-8')
+
+        assert "'nav_through_poses_bt_xml'" in launch_text
+        assert "'navigate_through_poses_replan_if_invalid.xml'" in launch_text
+        assert "name='default_nav_through_poses_bt_xml'" in launch_text
+
+
 def test_tmini_scan_frequency_uses_stable_10_hz_profile() -> None:
     config = load_config_from_path(TMINI_CONFIG)
     params = config['ydlidar_ros2_driver_node']['ros__parameters']
@@ -150,6 +177,8 @@ def test_nav2_translation_is_80_moving_turn_is_95_and_pivot_is_100() -> None:
     assert 'autonomous_max_track_speed_mps' not in go2_drive_params
     assert uart_params['max_linear_mps'] == 0.60
     assert uart_params['max_angular_radps'] == 2.67
+    assert manager_params['moving_inner_ratio'] == 0.50
+    assert go2_drive_params['moving_inner_ratio'] == 0.50
 
 
 def test_integrated_collision_lifecycle_manager_starts_after_its_node() -> None:
@@ -229,8 +258,19 @@ def test_navigation_launch_owns_jetson_mission_recording() -> None:
     assert recorder['sample_rate_hz'] == 2.0
     assert recorder['min_distance_m'] == 0.05
     assert recorder['path_publish_rate_hz'] == 1.0
-    assert uploader['api_base_url'] == ''
-    assert uploader['allow_insecure_http'] is False
+    assert recorder['navigation_status_topic'] == (
+        '/navigate_to_pose/_action/status'
+    )
+    assert recorder['navigate_through_poses_status_topic'] == (
+        '/navigate_through_poses/_action/status'
+    )
+    assert recorder['follow_waypoints_status_topic'] == (
+        '/follow_waypoints/_action/status'
+    )
+    assert recorder['complete_on_navigation_result'] is True
+    assert uploader['api_base_url'] == 'http://192.168.0.117:8000'
+    assert uploader['allow_insecure_http'] is True
+    assert uploader['api_key_environment'] == 'H753_MISSION_API_KEY'
 
 
 def test_workspace_go2_map_matches_validated_source_asset() -> None:
