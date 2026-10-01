@@ -28,7 +28,17 @@ md/DB_개발현황_서버연동_노션기록_20260907.txt
 
 # Python
 __pycache__/
+.pytest_cache/
 *.pyc
+
+# Local secrets, signing material, and runtime logs
+secrets/
+credentials/
+*.pem
+*.key
+*.p12
+*.pfx
+*.log
 
 # Vendored system utility (install dfu-util via apt instead)
 .tools/
